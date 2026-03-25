@@ -1,0 +1,11 @@
+data/
+backups/
+__pycache__/
+*.pyc
+.env
+*.egg-info
+.pytest_cache/
+.venv/
+ansible/group_vars/all/vault.yml
+ansible/group_vars/all/vars.yml
+ansible/inventory/hosts.yml

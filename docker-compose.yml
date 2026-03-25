@@ -1,0 +1,26 @@
+services:
+  fitness-mcp:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  # Uncomment for auto-TLS reverse proxy:
+  # caddy:
+  #   image: caddy:2
+  #   ports:
+  #     - "443:443"
+  #     - "80:80"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy_data:/data
+  #   depends_on:
+  #     - fitness-mcp
+
+# volumes:
+#   caddy_data:

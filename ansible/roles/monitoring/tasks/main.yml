@@ -1,0 +1,37 @@
+---
+- name: Create VictoriaMetrics targets.d directory
+  file:
+    path: /etc/victoriametrics/targets.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy mcp-health scrape targets
+  template:
+    src: mcp-health-targets.yml.j2
+    dest: /etc/victoriametrics/targets.d/mcp-health.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add mcp-health job to VictoriaMetrics scrape config
+  blockinfile:
+    path: /etc/victoriametrics/scrape.yml
+    marker: "# {mark} ANSIBLE MANAGED BLOCK mcp-health"
+    block: |2
+        - job_name: mcp-health
+          scrape_interval: 30s
+          metrics_path: /metrics
+          file_sd_configs:
+            - files: ['/etc/victoriametrics/targets.d/mcp-health.yml']
+    insertafter: EOF
+  notify: restart victoriametrics
+
+- name: Deploy Grafana dashboard
+  copy:
+    src: "{{ playbook_dir }}/../grafana/mcp-health-dashboard.json"
+    dest: /var/lib/grafana/dashboards/mcp-health-dashboard.json
+    owner: grafana
+    group: grafana
+    mode: "0644"

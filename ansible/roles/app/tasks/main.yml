@@ -1,0 +1,58 @@
+---
+- name: Create app directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ app_dir }}"
+    - "{{ app_dir }}/data"
+    - "{{ app_dir }}/backups"
+
+- name: Deploy docker-compose.yml
+  template:
+    src: docker-compose.prod.yml.j2
+    dest: "{{ app_dir }}/docker-compose.yml"
+    mode: "0644"
+  register: compose_changed
+
+- name: Deploy .env file
+  template:
+    src: env.j2
+    dest: "{{ app_dir }}/.env"
+    mode: "0600"
+  register: env_changed
+
+- name: Login to GHCR
+  command: docker login ghcr.io -u {{ vault_ghcr_user }} -p {{ vault_ghcr_token }}
+  no_log: true
+  changed_when: false
+
+- name: Pull latest image
+  command: docker compose pull
+  args:
+    chdir: "{{ app_dir }}"
+  register: pull_result
+  changed_when: "'Downloaded' in pull_result.stderr or 'Pull complete' in pull_result.stderr"
+
+- name: Start application
+  command: docker compose up -d
+  args:
+    chdir: "{{ app_dir }}"
+  when: compose_changed.changed or env_changed.changed or pull_result.changed
+
+- name: Weekly full OFF database import (Sunday 4:00)
+  cron:
+    name: "OFF full import"
+    minute: "0"
+    hour: "4"
+    weekday: "0"
+    job: "cd {{ app_dir }} && docker compose exec -T fitness-mcp python scripts/import_off.py"
+
+- name: Daily OFF delta update (4:00)
+  cron:
+    name: "OFF delta update"
+    minute: "0"
+    hour: "4"
+    weekday: "1-6"
+    job: "cd {{ app_dir }} && docker compose exec -T fitness-mcp python scripts/import_off.py --delta"

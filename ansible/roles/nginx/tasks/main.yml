@@ -1,0 +1,47 @@
+---
+- name: Deploy pre-SSL nginx config
+  template:
+    src: mcp-health-pre-ssl.conf.j2
+    dest: /etc/nginx/sites-available/mcp-health.conf
+    mode: "0644"
+
+- name: Enable nginx site
+  file:
+    src: /etc/nginx/sites-available/mcp-health.conf
+    dest: /etc/nginx/sites-enabled/mcp-health.conf
+    state: link
+
+- name: Test nginx config (pre-SSL)
+  command: nginx -t
+  changed_when: false
+
+- name: Reload nginx (pre-SSL)
+  systemd:
+    name: nginx
+    state: reloaded
+
+- name: Obtain SSL certificate
+  command: >
+    certbot certonly --webroot
+    -w /var/www/html
+    -d {{ domain }}
+    --non-interactive
+    --agree-tos
+    -m {{ admin_email }}
+  args:
+    creates: /etc/letsencrypt/live/{{ domain }}/fullchain.pem
+
+- name: Deploy full SSL nginx config
+  template:
+    src: mcp-health.conf.j2
+    dest: /etc/nginx/sites-available/mcp-health.conf
+    mode: "0644"
+
+- name: Test nginx config (SSL)
+  command: nginx -t
+  changed_when: false
+
+- name: Reload nginx (SSL)
+  systemd:
+    name: nginx
+    state: reloaded

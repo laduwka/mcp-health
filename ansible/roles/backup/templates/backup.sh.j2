@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+DB="{{ app_dir }}/{{ db_path }}"
+BACKUP_DIR="{{ app_dir }}/backups"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+sqlite3 "$DB" ".backup '${BACKUP_DIR}/fitness-${TIMESTAMP}.db'"
+find "$BACKUP_DIR" -name "fitness-*.db" -mtime +{{ backup_retain_days }} -delete

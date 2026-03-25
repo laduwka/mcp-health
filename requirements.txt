@@ -1,0 +1,6 @@
+mcp[cli]>=1.26
+prometheus_client>=0.20
+
+# dev
+pytest>=8.0
+pytest-asyncio>=0.24

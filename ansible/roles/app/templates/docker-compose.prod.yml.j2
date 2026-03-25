@@ -1,0 +1,12 @@
+services:
+  fitness-mcp:
+    image: {{ ghcr_image }}:main
+    expose:
+      - "{{ app_port }}"
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    env_file:
+      - .env
+    restart: unless-stopped
+    network_mode: host

@@ -1,0 +1,9 @@
+domain: "your-domain.com"
+admin_email: "admin@your-domain.com"
+app_dir: "/opt/mcp-health"
+app_port: 8000
+db_path: "data/fitness.db"
+timezone: "America/Toronto"
+ghcr_image: "ghcr.io/YOUR_USERNAME/mcp-health"
+backup_retain_days: 30
+oauth_issuer: "https://your-domain.com"

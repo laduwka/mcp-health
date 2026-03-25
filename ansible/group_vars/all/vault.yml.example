@@ -1,0 +1,3 @@
+vault_auth_token: "YOUR_AUTH_TOKEN"
+vault_ghcr_user: "laduwka"
+vault_ghcr_token: "YOUR_GITHUB_PAT_WITH_READ_PACKAGES"

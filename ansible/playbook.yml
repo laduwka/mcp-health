@@ -1,0 +1,16 @@
+---
+- name: Deploy mcp-health
+  hosts: mcp
+  become: true
+
+  roles:
+    - role: docker
+      tags: [docker]
+    - role: app
+      tags: [app, deploy]
+    - role: nginx
+      tags: [nginx, ssl]
+    - role: monitoring
+      tags: [monitoring]
+    - role: backup
+      tags: [backup]
