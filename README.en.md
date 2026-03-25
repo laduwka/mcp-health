@@ -37,7 +37,7 @@ cp .env.example .env
 
 # locally
 pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port 8000
+uvicorn mcp_health.server:app --host 0.0.0.0 --port 8000
 
 # or via Docker
 docker compose up -d
@@ -154,14 +154,15 @@ ansible-playbook -i inventory/hosts.yml playbook.yml --tags monitoring  # monito
 ## Project Structure
 
 ```
-server.py              # MCP server (FastMCP + Starlette + OAuth/Bearer auth)
-auth_provider.py       # OAuth provider (OAuthAuthorizationServerProvider + login flow)
-db.py                  # SQLite: products, meals, weight, goals
-calc.py                # Calorie/macro calculations, normalization, validation
-config.py              # Configuration from env vars
-openfoodfacts.py       # Local OpenFoodFacts search (SQLite + FTS5)
-metrics.py             # Prometheus metrics and instrumentation decorators
-log.py                 # Structured JSON logging
+mcp_health/            # Main application package
+  server.py            # MCP server (FastMCP + Starlette + OAuth/Bearer auth)
+  auth_provider.py     # OAuth provider (OAuthAuthorizationServerProvider + login flow)
+  db.py                # SQLite: products, meals, weight, goals
+  calc.py              # Calorie/macro calculations, normalization, validation
+  config.py            # Configuration from env vars
+  openfoodfacts.py     # Local OpenFoodFacts search (SQLite + FTS5)
+  metrics.py           # Prometheus metrics and instrumentation decorators
+  log.py               # Structured JSON logging
 scripts/import_off.py  # OFF database import (full CSV + delta updates)
 grafana/               # Grafana dashboard
 ansible/               # Ansible roles for VPS deployment (app, nginx, monitoring, backup)

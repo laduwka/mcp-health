@@ -37,7 +37,7 @@ cp .env.example .env
 
 # локально
 pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port 8000
+uvicorn mcp_health.server:app --host 0.0.0.0 --port 8000
 
 # или через Docker
 docker compose up -d
@@ -154,14 +154,15 @@ ansible-playbook -i inventory/hosts.yml playbook.yml --tags monitoring  # тол
 ## Структура
 
 ```
-server.py              # MCP-сервер (FastMCP + Starlette + OAuth/Bearer auth)
-auth_provider.py       # OAuth provider (OAuthAuthorizationServerProvider + login flow)
-db.py                  # SQLite: продукты, приёмы, вес, цели
-calc.py                # Расчёты КБЖУ, нормализация, валидация
-config.py              # Конфигурация из env vars
-openfoodfacts.py       # Локальный поиск по базе OpenFoodFacts (SQLite + FTS5)
-metrics.py             # Prometheus-метрики и декораторы инструментации
-log.py                 # Structured JSON logging
+mcp_health/            # Основной пакет приложения
+  server.py            # MCP-сервер (FastMCP + Starlette + OAuth/Bearer auth)
+  auth_provider.py     # OAuth provider (OAuthAuthorizationServerProvider + login flow)
+  db.py                # SQLite: продукты, приёмы, вес, цели
+  calc.py              # Расчёты КБЖУ, нормализация, валидация
+  config.py            # Конфигурация из env vars
+  openfoodfacts.py     # Локальный поиск по базе OpenFoodFacts (SQLite + FTS5)
+  metrics.py           # Prometheus-метрики и декораторы инструментации
+  log.py               # Structured JSON logging
 scripts/import_off.py  # Импорт базы OFF (full CSV + delta updates)
 grafana/               # Grafana dashboard
 ansible/               # Ansible-роли для деплоя на VPS (app, nginx, monitoring, backup)

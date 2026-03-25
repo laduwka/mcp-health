@@ -1,9 +1,9 @@
 import sqlite3
 import time
 
-import config
-from log import get_logger
-from metrics import OFF_DB_LATENCY, OFF_DB_QUERIES
+from . import config
+from .log import get_logger
+from .metrics import OFF_DB_LATENCY, OFF_DB_QUERIES
 
 _log = get_logger("mcp_health.off")
 

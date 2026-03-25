@@ -3,9 +3,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import config
-from log import get_logger
-from metrics import timed_db
+from . import config
+from .log import get_logger
+from .metrics import timed_db
 
 _log = get_logger("mcp_health.db")
 

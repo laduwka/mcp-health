@@ -7,8 +7,8 @@ from pydantic import AnyUrl
 from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
 
-import db
-from auth_provider import (
+from mcp_health import db
+from mcp_health.auth_provider import (
     ACCESS_TOKEN_TTL,
     HealthOAuthProvider,
 )
@@ -22,11 +22,11 @@ def oauth_db(monkeypatch):
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     db.init_db(conn)
-    import auth_provider
+    from mcp_health import auth_provider
 
     monkeypatch.setattr(auth_provider, "_conn", conn)
     monkeypatch.setattr(auth_provider, "_get_conn", lambda: conn)
-    monkeypatch.setattr("config.AUTH_TOKEN", "test-secret")
+    monkeypatch.setattr("mcp_health.config.AUTH_TOKEN", "test-secret")
     return conn
 
 

@@ -4,8 +4,7 @@ from unittest.mock import patch
 import pytest
 from starlette.testclient import TestClient
 
-import db
-import server
+from mcp_health import db, server
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +48,7 @@ class TestAddAndSearchProduct:
 
 
 class TestLookupProduct:
-    @patch("openfoodfacts.lookup_barcode")
+    @patch("mcp_health.openfoodfacts.lookup_barcode")
     def test_lookup_from_off_and_cache(self, mock_lookup):
         mock_lookup.return_value = {
             "name": "Nutella",
@@ -70,14 +69,14 @@ class TestLookupProduct:
         assert result2["source"] == "local"
         assert result2["product"]["name"] == "Nutella"
 
-    @patch("openfoodfacts.lookup_barcode")
+    @patch("mcp_health.openfoodfacts.lookup_barcode")
     def test_lookup_not_found(self, mock_lookup):
         mock_lookup.return_value = None
         result = server.lookup_product("0000000000000")
         assert result["source"] is None
         assert result["product"] is None
 
-    @patch("openfoodfacts.lookup_barcode")
+    @patch("mcp_health.openfoodfacts.lookup_barcode")
     def test_lookup_no_save(self, mock_lookup):
         mock_lookup.return_value = {
             "name": "Test",
@@ -94,7 +93,7 @@ class TestLookupProduct:
 
 
 class TestSearchProductWithOFF:
-    @patch("openfoodfacts.search")
+    @patch("mcp_health.openfoodfacts.search")
     def test_includes_off_results(self, mock_search):
         mock_search.return_value = [
             {
@@ -111,13 +110,13 @@ class TestSearchProductWithOFF:
         sources = [r["source"] for r in results]
         assert "openfoodfacts" in sources
 
-    @patch("openfoodfacts.search")
+    @patch("mcp_health.openfoodfacts.search")
     def test_off_disabled(self, mock_search):
         results = server.search_product("yogurt", limit=5, include_off=False)
         mock_search.assert_not_called()
         assert all(r["source"] == "local" for r in results)
 
-    @patch("openfoodfacts.search")
+    @patch("mcp_health.openfoodfacts.search")
     def test_deduplicates_by_barcode(self, mock_search):
         server.add_product("Local Yogurt", 59, 10, 0.7, 3.6, barcode="111")
         mock_search.return_value = [

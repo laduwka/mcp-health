@@ -1,7 +1,7 @@
 import sqlite3
 
 import pytest
-from db import (
+from mcp_health.db import (
     delete_meal,
     get_current_goals,
     get_daily_totals,
