@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "changeme")
 DB_PATH = str(BASE_DIR / os.environ.get("DB_PATH", "data/fitness.db"))

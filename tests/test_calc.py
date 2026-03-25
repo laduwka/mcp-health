@@ -1,5 +1,5 @@
 import pytest
-from calc import (
+from mcp_health.calc import (
     calculate_portion,
     normalize_per_100,
     validate_nutrition,

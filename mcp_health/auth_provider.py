@@ -15,8 +15,7 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
-import config
-import db
+from . import config, db
 
 AUTH_CODE_TTL = 600  # 10 min
 ACCESS_TOKEN_TTL = 3600  # 1 hour

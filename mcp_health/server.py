@@ -11,12 +11,9 @@ from prometheus_client import make_asgi_app
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-import calc
-import config
-import db
-import openfoodfacts
-from log import get_logger
-from metrics import (
+from . import calc, config, db, openfoodfacts
+from .log import get_logger
+from .metrics import (
     MEALS_LOGGED,
     PRODUCTS_CREATED,
     WEIGHT_ENTRIES,
@@ -28,7 +25,7 @@ _log = get_logger("mcp_health.server")
 _oauth_mode = bool(config.OAUTH_ISSUER)
 
 if _oauth_mode:
-    from auth_provider import HealthOAuthProvider
+    from .auth_provider import HealthOAuthProvider
 
     _oauth_provider = HealthOAuthProvider()
     auth_settings = AuthSettings(

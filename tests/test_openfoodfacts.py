@@ -2,8 +2,7 @@ import sqlite3
 import tempfile
 import os
 
-import openfoodfacts
-import config
+from mcp_health import openfoodfacts, config
 
 
 def _create_test_db(path: str):
