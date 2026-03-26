@@ -13,6 +13,9 @@ MCP server for nutrition and weight tracking. Works as an HTTP endpoint with OAu
 - **Weight** — tracking with trends (week/month)
 - **Goals** — daily calorie/macro targets, remaining intake
 - **Reports** — daily summary, weekly report with adherence, trends over any period
+- **Apple Health** — automatic data import via [Health Auto Export](https://www.healthyapps.dev/) (weight, workouts, menstrual cycle)
+- **Activity** — workout logging (type, duration, calories, distance, heart rate)
+- **Menstrual cycle** — event tracking, average cycle length, next period prediction
 
 ## MCP Tools
 
@@ -33,6 +36,10 @@ MCP server for nutrition and weight tracking. Works as an HTTP endpoint with OAu
 | `delete_meal` | Delete a logged meal |
 | `delete_meal_item` | Delete a single item from a meal (deletes meal if last item) |
 | `update_meal_item` | Update item weight with automatic macro recalculation |
+| `log_activity` | Log a workout (type, duration, calories, distance, heart rate) |
+| `get_activity_summary` | Activity summary for a day: total duration, calories, distance |
+| `log_cycle_event` | Log a cycle event (flow, cervical_mucus, ovulation_test, basal_temp) |
+| `get_cycle_summary` | Cycle analytics: average length, next period prediction |
 
 ## Quick Start
 
@@ -97,6 +104,35 @@ Claude Desktop supports OAuth — connection is the same as web. You can also us
 }
 ```
 
+## Apple Health Integration
+
+Health data is automatically imported from Apple Health via the [Health Auto Export](https://www.healthyapps.dev/) iOS app (Premium, ~$3/mo).
+
+### Setup
+
+Create 3 automations in Health Auto Export (each sends a separate POST request):
+
+| Automation | Data Type | What's Imported |
+|------------|-----------|-----------------|
+| Body Mass | Health Metrics | Weight |
+| Workouts | Workouts | Workouts (type, duration, calories, distance, heart rate) |
+| Cycle Tracking | Cycle Tracking | Menstrual cycle (flow, cervical mucus, ovulation, etc.) |
+
+For each automation:
+- **URL**: `https://<your-domain>/api/health-import`
+- **Method**: POST
+- **Header**: `Authorization: Bearer <AUTH_TOKEN>`
+- **Format**: JSON
+- **Frequency**: as desired (e.g. every 6 hours)
+
+### Endpoint
+
+`POST /api/health-import` — accepts JSON from Health Auto Export, parses metrics/workouts/cycle events, deduplicates and stores in DB. Returns:
+
+```json
+{"status": "ok", "imported": {"weight": 1, "activities": 0, "cycle_events": 1}}
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -118,7 +154,8 @@ The application exports Prometheus metrics at `/metrics` (accessible only from l
 - **MCP Tools** — `mcp_tool_calls_total`, `mcp_tool_latency_seconds` (per tool)
 - **OpenFoodFacts** — `off_db_queries_total`, `off_db_latency_seconds` (per method: search/lookup)
 - **Database** — `db_operations_total`, `db_latency_seconds` (per operation)
-- **Business** — `meals_logged_total`, `products_created_total`, `weight_entries_total`
+- **Business** — `meals_logged_total`, `products_created_total`, `weight_entries_total`, `activities_logged_total`, `cycle_events_logged_total`
+- **Health Import** — `health_import_total` (by data_type: weight/activity/cycle), `health_import_latency_seconds`
 
 ### Logging
 
@@ -163,7 +200,7 @@ ansible-playbook -i inventory/hosts.yml playbook.yml --tags monitoring  # monito
 mcp_health/            # Main application package
   server.py            # MCP server (FastMCP + Starlette + OAuth/Bearer auth)
   auth_provider.py     # OAuth provider (OAuthAuthorizationServerProvider + login flow)
-  db.py                # SQLite: products, meals, weight, goals
+  db.py                # SQLite: products, meals, weight, goals, activity, cycle
   calc.py              # Calorie/macro calculations, normalization, validation
   config.py            # Configuration from env vars
   openfoodfacts.py     # Local OpenFoodFacts search (SQLite + FTS5)
