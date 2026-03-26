@@ -617,7 +617,16 @@ def upsert_activity(
                SET end_at = ?, duration_min = ?, kcal_burned = ?, distance_m = ?,
                    avg_heart_rate = ?, notes = ?, logged_at = ?
                WHERE id = ?""",
-            (end_at, duration_min, kcal_burned, distance_m, avg_heart_rate, notes, _now_utc(), existing["id"]),
+            (
+                end_at,
+                duration_min,
+                kcal_burned,
+                distance_m,
+                avg_heart_rate,
+                notes,
+                _now_utc(),
+                existing["id"],
+            ),
         )
         conn.commit()
         return existing["id"]
@@ -625,14 +634,27 @@ def upsert_activity(
         """INSERT INTO activity_log
            (activity_type, start_at, end_at, duration_min, kcal_burned, distance_m, avg_heart_rate, notes, source, logged_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (activity_type, start_at, end_at, duration_min, kcal_burned, distance_m, avg_heart_rate, notes, source, _now_utc()),
+        (
+            activity_type,
+            start_at,
+            end_at,
+            duration_min,
+            kcal_burned,
+            distance_m,
+            avg_heart_rate,
+            notes,
+            source,
+            _now_utc(),
+        ),
     )
     conn.commit()
     return cur.lastrowid
 
 
 @timed_db
-def get_activities(conn: sqlite3.Connection, start_date: str, end_date: str) -> list[dict]:
+def get_activities(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[dict]:
     """Get activities within a date range (based on start_at)."""
     start_utc, _ = _date_range_utc(start_date)
     _, end_utc = _date_range_utc(end_date)
@@ -714,7 +736,9 @@ def upsert_cycle_event(
 
 
 @timed_db
-def get_cycle_events(conn: sqlite3.Connection, start_date: str, end_date: str) -> list[dict]:
+def get_cycle_events(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM cycle_log WHERE date >= ? AND date <= ? ORDER BY date",
         (start_date, end_date),
@@ -726,7 +750,9 @@ def get_cycle_events(conn: sqlite3.Connection, start_date: str, end_date: str) -
 def get_cycle_flow_dates(conn: sqlite3.Connection, months: int = 6) -> list[str]:
     """Get all dates with menstrual flow events, ordered by date (last N months)."""
     today = _today_local()
-    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+    start = (
+        datetime.strptime(today, "%Y-%m-%d") - timedelta(days=months * 30)
+    ).strftime("%Y-%m-%d")
     rows = conn.execute(
         """SELECT DISTINCT date FROM cycle_log
            WHERE event_type = 'flow' AND date >= ?

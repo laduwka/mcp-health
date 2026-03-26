@@ -606,14 +606,20 @@ class TestCycle:
 
     def test_flow_dates(self, conn):
         for day in [1, 2, 3, 4, 29, 30, 31]:
-            upsert_cycle_event(conn, event_type="flow", date=f"2026-03-{day:02d}", value="medium")
+            upsert_cycle_event(
+                conn, event_type="flow", date=f"2026-03-{day:02d}", value="medium"
+            )
         dates = get_cycle_flow_dates(conn, months=1)
         assert len(dates) == 7
         assert dates[0] == "2026-03-01"
 
     def test_multiple_event_types(self, conn):
         upsert_cycle_event(conn, event_type="flow", date="2026-03-01", value="heavy")
-        upsert_cycle_event(conn, event_type="cervical_mucus", date="2026-03-10", value="egg_white")
-        upsert_cycle_event(conn, event_type="basal_temp", date="2026-03-10", value="36.6")
+        upsert_cycle_event(
+            conn, event_type="cervical_mucus", date="2026-03-10", value="egg_white"
+        )
+        upsert_cycle_event(
+            conn, event_type="basal_temp", date="2026-03-10", value="36.6"
+        )
         events = get_cycle_events(conn, "2026-03-01", "2026-03-31")
         assert len(events) == 3

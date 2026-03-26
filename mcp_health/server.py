@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -784,6 +785,7 @@ def log_activity(
 ) -> dict:
     """Log a physical activity (workout, walk, etc.). start_at in ISO format."""
     conn = _get_conn()
+    start_at = _normalize_ts(start_at)
     end_at = None
     if duration_min and start_at:
         try:
@@ -842,7 +844,12 @@ def log_cycle_event(
         conn, event_type=event_type, date=date_str, value=value, notes=notes
     )
     CYCLE_EVENTS_LOGGED.inc()
-    return {"entry_id": entry_id, "status": "logged", "event_type": event_type, "date": date_str}
+    return {
+        "entry_id": entry_id,
+        "status": "logged",
+        "event_type": event_type,
+        "date": date_str,
+    }
 
 
 # --- Tool: get_cycle_summary ---
@@ -854,7 +861,9 @@ def get_cycle_summary(months: int = 3) -> dict:
     """Get menstrual cycle summary: recent events, average cycle length, last period start."""
     conn = _get_conn()
     today = _today()
-    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+    start = (
+        datetime.strptime(today, "%Y-%m-%d") - timedelta(days=months * 30)
+    ).strftime("%Y-%m-%d")
     events = db.get_cycle_events(conn, start, today)
     flow_dates = db.get_cycle_flow_dates(conn, months)
 
@@ -896,7 +905,9 @@ def get_cycle_summary(months: int = 3) -> dict:
             prev_date = dt
         if last_period_start:
             result["last_period_start"] = last_period_start
-            next_dt = datetime.strptime(last_period_start, "%Y-%m-%d") + timedelta(days=round(avg_cycle_length))
+            next_dt = datetime.strptime(last_period_start, "%Y-%m-%d") + timedelta(
+                days=round(avg_cycle_length)
+            )
             result["predicted_next_period"] = next_dt.strftime("%Y-%m-%d")
 
     return result
@@ -922,7 +933,9 @@ async def _handle_health_import(request: Request) -> Response:
         body = await request.body()
         payload = json.loads(body)
     except (json.JSONDecodeError, ValueError):
-        return Response('{"error": "invalid JSON"}', status_code=400, media_type="application/json")
+        return Response(
+            '{"error": "invalid JSON"}', status_code=400, media_type="application/json"
+        )
 
     conn = _get_conn()
     data = payload.get("data", payload)
@@ -940,13 +953,14 @@ async def _handle_health_import(request: Request) -> Response:
                 if date_str:
                     db.upsert_weight(conn, round(qty, 2), date_str)
                     WEIGHT_ENTRIES.inc()
+                    HEALTH_IMPORTS.labels(data_type="weight").inc()
                     imported["weight"] += 1
 
     # Process workouts
     for workout in data.get("workouts", []):
         activity_type = workout.get("name", "Unknown")
-        start_at = workout.get("start", "")
-        end_at = workout.get("end")
+        start_at = _normalize_ts(workout.get("start", ""))
+        end_at = _normalize_ts(workout.get("end")) if workout.get("end") else None
         duration = workout.get("duration")  # seconds
         duration_min = round(duration / 60, 1) if duration else None
 
@@ -1021,16 +1035,29 @@ async def _handle_health_import(request: Request) -> Response:
     )
 
 
+def _normalize_ts(ts: str) -> str:
+    """Normalize a timestamp string to canonical UTC ISO format for consistent storage."""
+    if not ts:
+        return ts
+    ts = ts.replace("Z", "+00:00")
+    # HAE space-separated: "2025-01-20 08:00:00 -0500"
+    if "T" not in ts and len(ts) > 10:
+        ts = ts[:10] + "T" + ts[11:]
+        ts = ts.replace(" -", "-").replace(" +", "+")
+    # Insert colon in offset: -0500 → -05:00
+    ts = re.sub(r"([+-])(\d{2})(\d{2})$", r"\1\2:\3", ts)
+    try:
+        dt = datetime.fromisoformat(ts)
+        return dt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    except ValueError:
+        return ts
+
+
 def _parse_date(date_str: str) -> str | None:
     """Extract YYYY-MM-DD from a datetime string (ISO 8601 or HAE space-separated)."""
     if not date_str:
         return None
-    # Normalize HAE format: "2025-01-20 08:00:00 -0500" → "2025-01-20T08:00:00-0500"
-    normalized = date_str.replace("Z", "+00:00")
-    if "T" not in normalized and len(normalized) > 10:
-        normalized = normalized[:10] + "T" + normalized[11:]
-        # Remove space before timezone offset: "T08:00:00 -0500" → "T08:00:00-0500"
-        normalized = normalized.replace(" -", "-").replace(" +", "+")
+    normalized = _normalize_ts(date_str)
     try:
         dt = datetime.fromisoformat(normalized)
         return dt.astimezone(ZoneInfo(config.TZ)).strftime("%Y-%m-%d")

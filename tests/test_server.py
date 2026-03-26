@@ -573,9 +573,13 @@ class TestCycleTracking:
     def test_cycle_summary_with_prediction(self):
         # Two cycles: March 1-4 and March 29-April 1
         for day in [1, 2, 3, 4]:
-            server.log_cycle_event(event_type="flow", date=f"2026-03-{day:02d}", value="medium")
+            server.log_cycle_event(
+                event_type="flow", date=f"2026-03-{day:02d}", value="medium"
+            )
         for day in [29, 30, 31]:
-            server.log_cycle_event(event_type="flow", date=f"2026-03-{day:02d}", value="medium")
+            server.log_cycle_event(
+                event_type="flow", date=f"2026-03-{day:02d}", value="medium"
+            )
         server.log_cycle_event(event_type="flow", date="2026-04-01", value="light")
 
         result = server.get_cycle_summary(months=3)
@@ -596,7 +600,9 @@ class TestHealthImportEndpoint:
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        return client.post("/api/health-import", content=json.dumps(payload), headers=headers)
+        return client.post(
+            "/api/health-import", content=json.dumps(payload), headers=headers
+        )
 
     def test_no_auth_returns_401(self):
         resp = self._post_import({"data": {}})
