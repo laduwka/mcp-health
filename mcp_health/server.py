@@ -923,9 +923,25 @@ _metrics_app = make_asgi_app()
 
 async def _handle_health_import(request: Request) -> Response:
     """Handle POST /api/health-import from Health Auto Export app."""
+    source_ip = request.client.host if request.client else "unknown"
+    automation_id = request.headers.get("automation-id", "")
+
+    _log.info(
+        "Health import request received",
+        extra={
+            "source_ip": source_ip,
+            "automation_id": automation_id,
+            "path": "/api/health-import",
+        },
+    )
+
     # Auth check
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer ") or auth[7:] != config.AUTH_TOKEN:
+        _log.warning(
+            "Health import auth failed",
+            extra={"source_ip": source_ip, "status": "401"},
+        )
         return Response("Unauthorized", status_code=401)
 
     start_time = time.monotonic()
@@ -933,6 +949,10 @@ async def _handle_health_import(request: Request) -> Response:
         body = await request.body()
         payload = json.loads(body)
     except (json.JSONDecodeError, ValueError):
+        _log.warning(
+            "Health import invalid JSON",
+            extra={"source_ip": source_ip, "status": "400"},
+        )
         return Response(
             '{"error": "invalid JSON"}', status_code=400, media_type="application/json"
         )
@@ -1026,7 +1046,15 @@ async def _handle_health_import(request: Request) -> Response:
             imported["cycle_events"] += 1
 
     HEALTH_IMPORT_LATENCY.observe(time.monotonic() - start_time)
-    _log.info("Health data imported", extra={"imported": imported})
+    _log.info(
+        "Health data imported",
+        extra={
+            "imported": imported,
+            "source_ip": source_ip,
+            "automation_id": automation_id,
+            "duration_s": round(time.monotonic() - start_time, 3),
+        },
+    )
 
     return Response(
         json.dumps({"status": "ok", "imported": imported}),

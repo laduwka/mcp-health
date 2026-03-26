@@ -23,6 +23,10 @@ class _JSONFormatter(logging.Formatter):
             "tool",
             "duration_s",
             "error",
+            "imported",
+            "source_ip",
+            "path",
+            "automation_id",
         ):
             val = getattr(record, key, None)
             if val is not None:
