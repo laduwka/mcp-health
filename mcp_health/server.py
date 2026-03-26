@@ -930,7 +930,7 @@ async def _handle_health_import(request: Request) -> Response:
 
     # Process metrics (weight, etc.)
     for metric in data.get("metrics", []):
-        metric_name = metric.get("name", "").lower()
+        metric_name = metric.get("name", "").lower().replace(" ", "_")
         if metric_name in ("weight", "body_mass", "weight_body_mass"):
             for entry in metric.get("data", []):
                 qty = entry.get("qty")
@@ -938,10 +938,7 @@ async def _handle_health_import(request: Request) -> Response:
                     continue
                 date_str = _parse_date(entry.get("date", ""))
                 if date_str:
-                    # Convert lbs to kg if needed
-                    units = metric.get("units", "").lower()
-                    weight_kg = qty * 0.453592 if "lb" in units else qty
-                    db.upsert_weight(conn, round(weight_kg, 2), date_str)
+                    db.upsert_weight(conn, round(qty, 2), date_str)
                     WEIGHT_ENTRIES.inc()
                     imported["weight"] += 1
 
@@ -952,9 +949,18 @@ async def _handle_health_import(request: Request) -> Response:
         end_at = workout.get("end")
         duration = workout.get("duration")  # seconds
         duration_min = round(duration / 60, 1) if duration else None
-        kcal = workout.get("activeEnergy", {}).get("qty") if isinstance(workout.get("activeEnergy"), dict) else workout.get("activeEnergy")
-        distance = workout.get("distance", {}).get("qty") if isinstance(workout.get("distance"), dict) else workout.get("distance")
-        hr = workout.get("heartRate", {}).get("avg") if isinstance(workout.get("heartRate"), dict) else None
+
+        energy_raw = workout.get("activeEnergyBurned") or workout.get("activeEnergy")
+        kcal = energy_raw.get("qty") if isinstance(energy_raw, dict) else energy_raw
+
+        dist_raw = workout.get("distance")
+        distance = dist_raw.get("qty") if isinstance(dist_raw, dict) else dist_raw
+
+        hr_raw = workout.get("heartRate")
+        hr = None
+        if isinstance(hr_raw, dict):
+            avg_raw = hr_raw.get("avg")
+            hr = avg_raw.get("qty") if isinstance(avg_raw, dict) else avg_raw
 
         if start_at:
             db.upsert_activity(
@@ -973,13 +979,27 @@ async def _handle_health_import(request: Request) -> Response:
             imported["activities"] += 1
 
     # Process cycle tracking
+    _CYCLE_FIELD_MAP = {
+        "menstrualFlow": "flow",
+        "cervicalMucus": "cervical_mucus",
+        "ovulationTestResult": "ovulation_test",
+        "basalBodyTemperature": "basal_temp",
+        "sexualActivity": "sexual_activity",
+    }
     for event in data.get("cycleTracking", []):
-        event_type = event.get("name", event.get("type", "unknown")).lower().replace(" ", "_")
-        value = event.get("value", event.get("qty"))
-        if isinstance(value, (int, float)):
-            value = str(value)
-        date_str = _parse_date(event.get("date", ""))
-        if date_str:
+        date_str = _parse_date(event.get("start") or event.get("date", ""))
+        if not date_str:
+            continue
+        for hae_field, event_type in _CYCLE_FIELD_MAP.items():
+            raw = event.get(hae_field)
+            if raw is None:
+                continue
+            if isinstance(raw, dict):
+                value = str(raw.get("qty", ""))
+            elif isinstance(raw, bool):
+                value = "yes" if raw else "no"
+            else:
+                value = str(raw)
             db.upsert_cycle_event(
                 conn,
                 event_type=event_type,
@@ -1002,14 +1022,19 @@ async def _handle_health_import(request: Request) -> Response:
 
 
 def _parse_date(date_str: str) -> str | None:
-    """Extract YYYY-MM-DD from an ISO datetime string."""
+    """Extract YYYY-MM-DD from a datetime string (ISO 8601 or HAE space-separated)."""
     if not date_str:
         return None
+    # Normalize HAE format: "2025-01-20 08:00:00 -0500" → "2025-01-20T08:00:00-0500"
+    normalized = date_str.replace("Z", "+00:00")
+    if "T" not in normalized and len(normalized) > 10:
+        normalized = normalized[:10] + "T" + normalized[11:]
+        # Remove space before timezone offset: "T08:00:00 -0500" → "T08:00:00-0500"
+        normalized = normalized.replace(" -", "-").replace(" +", "+")
     try:
-        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(normalized)
         return dt.astimezone(ZoneInfo(config.TZ)).strftime("%Y-%m-%d")
     except ValueError:
-        # Try plain date
         if len(date_str) >= 10:
             return date_str[:10]
         return None

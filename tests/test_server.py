@@ -623,7 +623,7 @@ class TestHealthImportEndpoint:
             "data": {
                 "metrics": [
                     {
-                        "name": "weight_body_mass",
+                        "name": "Body Mass",
                         "units": "kg",
                         "data": [
                             {"date": "2026-03-20T08:00:00+00:00", "qty": 72.5},
@@ -652,9 +652,13 @@ class TestHealthImportEndpoint:
                         "start": "2026-03-20T08:00:00+00:00",
                         "end": "2026-03-20T08:45:00+00:00",
                         "duration": 2700,
-                        "activeEnergy": {"qty": 350, "units": "kcal"},
+                        "activeEnergyBurned": {"qty": 350, "units": "kcal"},
                         "distance": {"qty": 5000, "units": "m"},
-                        "heartRate": {"avg": 145, "min": 120, "max": 170},
+                        "heartRate": {
+                            "avg": {"qty": 145, "units": "bpm"},
+                            "min": {"qty": 120, "units": "bpm"},
+                            "max": {"qty": 170, "units": "bpm"},
+                        },
                     }
                 ]
             }
@@ -668,30 +672,42 @@ class TestHealthImportEndpoint:
         payload = {
             "data": {
                 "cycleTracking": [
-                    {"name": "Menstrual Flow", "date": "2026-03-01T00:00:00+00:00", "value": "medium"},
-                    {"name": "Cervical Mucus", "date": "2026-03-10T00:00:00+00:00", "value": "egg_white"},
+                    {
+                        "start": "2026-03-01T00:00:00+00:00",
+                        "name": "Menstruation",
+                        "menstrualFlow": "Heavy",
+                        "cervicalMucus": "Dry",
+                    },
+                    {
+                        "start": "2026-03-10T00:00:00+00:00",
+                        "name": "Ovulation",
+                        "ovulationTestResult": "Positive",
+                        "basalBodyTemperature": {"qty": 37.2, "units": "C"},
+                    },
                 ]
             }
         }
         resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
         assert resp.status_code == 200
         body = resp.json()
-        assert body["imported"]["cycle_events"] == 2
+        # First event: flow + cervical_mucus = 2, second: ovulation_test + basal_temp = 2
+        assert body["imported"]["cycle_events"] == 4
 
     def test_method_not_allowed(self):
         client = TestClient(server.app, raise_server_exceptions=False)
         resp = client.get("/api/health-import")
         assert resp.status_code == 405
 
-    def test_import_weight_lbs(self):
+    def test_hae_date_format(self):
+        """Health Auto Export may send space-separated dates."""
         payload = {
             "data": {
                 "metrics": [
                     {
-                        "name": "body_mass",
-                        "units": "lb",
+                        "name": "Body Mass",
+                        "units": "kg",
                         "data": [
-                            {"date": "2026-03-20T08:00:00+00:00", "qty": 160},
+                            {"date": "2026-03-20 08:00:00 -0400", "qty": 72.5},
                         ],
                     }
                 ]
@@ -699,7 +715,40 @@ class TestHealthImportEndpoint:
         }
         resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
         assert resp.status_code == 200
-        conn = server._get_conn()
-        w = db.get_weight_for_date(conn, "2026-03-20")
-        assert w is not None
-        assert 72 < w["weight_kg"] < 73  # ~72.57 kg
+        assert resp.json()["imported"]["weight"] == 1
+
+    def test_import_workout_with_flat_heart_rate(self):
+        """Some HAE versions send heartRate.avg as plain number."""
+        payload = {
+            "data": {
+                "workouts": [
+                    {
+                        "name": "Walking",
+                        "start": "2026-03-20T18:00:00+00:00",
+                        "duration": 1800,
+                        "activeEnergyBurned": 150,
+                        "distance": 2000,
+                        "heartRate": {"avg": 110},
+                    }
+                ]
+            }
+        }
+        resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
+        assert resp.status_code == 200
+        assert resp.json()["imported"]["activities"] == 1
+
+    def test_import_cycle_boolean_field(self):
+        """sexualActivity is a boolean in HAE."""
+        payload = {
+            "data": {
+                "cycleTracking": [
+                    {
+                        "start": "2026-03-15T00:00:00+00:00",
+                        "sexualActivity": True,
+                    },
+                ]
+            }
+        }
+        resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
+        assert resp.status_code == 200
+        assert resp.json()["imported"]["cycle_events"] == 1
