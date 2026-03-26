@@ -17,7 +17,8 @@ def _create_test_db(path: str):
             kcal_per_100 REAL NOT NULL,
             protein_per_100 REAL NOT NULL,
             fat_per_100 REAL NOT NULL,
-            carbs_per_100 REAL NOT NULL
+            carbs_per_100 REAL NOT NULL,
+            countries_tags TEXT
         );
 
         CREATE VIRTUAL TABLE products_fts USING fts5(
@@ -29,12 +30,12 @@ def _create_test_db(path: str):
         """
     )
     conn.executemany(
-        "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            ("3017620422003", "Nutella", "Ferrero", 539.0, 6.3, 30.9, 57.5),
-            ("123", "Chocolate Bar", "Brand A", 545.0, 5.0, 30.0, 60.0),
-            ("789", "Another Chocolate", "Brand C", 500.0, 7.0, 28.0, 55.0),
-            ("999", "Banana Chips", None, 520.0, 2.0, 28.0, 65.0),
+            ("3017620422003", "Nutella", "Ferrero", 539.0, 6.3, 30.9, 57.5, "en:france,en:canada"),
+            ("123", "Chocolate Bar", "Brand A", 545.0, 5.0, 30.0, 60.0, "en:canada"),
+            ("789", "Another Chocolate", "Brand C", 500.0, 7.0, 28.0, 55.0, "en:russia"),
+            ("999", "Banana Chips", None, 520.0, 2.0, 28.0, 65.0, None),
         ],
     )
     conn.execute("INSERT INTO products_fts(products_fts) VALUES('rebuild')")
@@ -114,3 +115,16 @@ class TestSearch:
     def test_no_results(self):
         results = openfoodfacts.search("xyznonexistent")
         assert results == []
+
+    def test_country_filter(self):
+        results = openfoodfacts.search("chocolate", limit=10, country="en:canada")
+        assert len(results) == 1
+        assert results[0]["name"] == "Chocolate Bar"
+
+    def test_country_filter_no_match(self):
+        results = openfoodfacts.search("banana", limit=10, country="en:canada")
+        assert len(results) == 0
+
+    def test_country_filter_none_passes_all(self):
+        results = openfoodfacts.search("chocolate", limit=10, country=None)
+        assert len(results) == 2

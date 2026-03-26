@@ -8,8 +8,10 @@ from mcp_health.db import (
     get_date_range_totals,
     get_meal,
     get_meals_for_date,
+    get_most_common_serving,
     get_product,
     get_product_by_barcode,
+    get_recent_meals_by_type,
     get_top_products,
     get_weight_for_date,
     get_weight_range,
@@ -19,6 +21,7 @@ from mcp_health.db import (
     insert_meal,
     insert_product,
     search_products,
+    update_product_serving,
     upsert_weight,
 )
 
@@ -286,3 +289,136 @@ class TestAggregation:
         assert len(top) >= 1
         assert top[0]["name"] == "Apple"
         assert top[0]["times_used"] == 3
+
+
+class TestProductServing:
+    def test_update_and_search(self, conn):
+        pid = insert_product(
+            conn,
+            name="Protein Powder",
+            kcal_per_100=400,
+            protein_per_100=80,
+            fat_per_100=5,
+            carbs_per_100=10,
+            created_at="2026-01-01T00:00:00",
+        )
+        update_product_serving(conn, pid, 39.0, "1 scoop")
+        product = get_product(conn, pid)
+        assert product["default_serving_grams"] == 39.0
+        assert product["serving_label"] == "1 scoop"
+
+        results = search_products(conn, "protein")
+        assert results[0]["default_serving_grams"] == 39.0
+        assert results[0]["serving_label"] == "1 scoop"
+
+    def test_schema_migration_idempotent(self, conn):
+        # Calling init_db twice should not fail
+        init_db(conn)
+        pid = insert_product(
+            conn,
+            name="Test",
+            kcal_per_100=100,
+            protein_per_100=10,
+            fat_per_100=5,
+            carbs_per_100=15,
+            created_at="2026-01-01T00:00:00",
+        )
+        assert get_product(conn, pid) is not None
+
+
+class TestMostCommonServing:
+    def test_returns_dominant_weight(self, conn):
+        pid = insert_product(
+            conn,
+            name="Rice",
+            kcal_per_100=130,
+            protein_per_100=2.7,
+            fat_per_100=0.3,
+            carbs_per_100=28,
+            created_at="2026-01-01T00:00:00",
+        )
+        # Log 3x 200g, 1x 100g
+        for i in range(3):
+            insert_meal(
+                conn, "lunch", None, f"2026-03-{20+i:02d}T12:00:00+00:00",
+                [{"product_id": pid, "name": "Rice", "weight_grams": 200,
+                  "kcal": 260, "protein": 5.4, "fat": 0.6, "carbs": 56}],
+            )
+        insert_meal(
+            conn, "dinner", None, "2026-03-23T18:00:00+00:00",
+            [{"product_id": pid, "name": "Rice", "weight_grams": 100,
+              "kcal": 130, "protein": 2.7, "fat": 0.3, "carbs": 28}],
+        )
+
+        common = get_most_common_serving(conn, pid)
+        assert common is not None
+        assert common["weight_grams"] == 200
+        assert common["count"] == 3
+        assert common["total"] == 4
+        assert common["ratio"] == 0.75
+
+    def test_no_meals(self, conn):
+        pid = insert_product(
+            conn,
+            name="Empty",
+            kcal_per_100=100,
+            protein_per_100=10,
+            fat_per_100=5,
+            carbs_per_100=15,
+            created_at="2026-01-01T00:00:00",
+        )
+        assert get_most_common_serving(conn, pid) is None
+
+
+class TestRecentMealsByType:
+    def test_returns_meals_with_items(self, conn):
+        pid = insert_product(
+            conn,
+            name="Oats",
+            kcal_per_100=389,
+            protein_per_100=16.9,
+            fat_per_100=6.9,
+            carbs_per_100=66.3,
+            created_at="2026-01-01T00:00:00",
+        )
+        insert_meal(
+            conn, "breakfast", None, "2026-03-24T12:00:00+00:00",
+            [{"product_id": pid, "name": "Oats", "weight_grams": 80,
+              "kcal": 311.2, "protein": 13.5, "fat": 5.5, "carbs": 53.0}],
+        )
+        insert_meal(
+            conn, "breakfast", None, "2026-03-25T12:00:00+00:00",
+            [{"product_id": pid, "name": "Oats", "weight_grams": 80,
+              "kcal": 311.2, "protein": 13.5, "fat": 5.5, "carbs": 53.0}],
+        )
+        insert_meal(
+            conn, "lunch", None, "2026-03-25T16:00:00+00:00",
+            [{"product_id": pid, "name": "Oats", "weight_grams": 100,
+              "kcal": 389, "protein": 16.9, "fat": 6.9, "carbs": 66.3}],
+        )
+
+        meals = get_recent_meals_by_type(
+            conn, "breakfast",
+            "2026-03-24T00:00:00+00:00", "2026-03-26T00:00:00+00:00", limit=5,
+        )
+        assert len(meals) == 2
+        assert all(m["meal_type"] == "breakfast" for m in meals)
+        assert len(meals[0]["items"]) == 1
+
+    def test_no_filter(self, conn):
+        insert_meal(
+            conn, "breakfast", None, "2026-03-25T12:00:00+00:00",
+            [{"name": "A", "weight_grams": 100,
+              "kcal": 200, "protein": 10, "fat": 5, "carbs": 30}],
+        )
+        insert_meal(
+            conn, "lunch", None, "2026-03-25T16:00:00+00:00",
+            [{"name": "B", "weight_grams": 100,
+              "kcal": 300, "protein": 15, "fat": 8, "carbs": 40}],
+        )
+
+        meals = get_recent_meals_by_type(
+            conn, None,
+            "2026-03-25T00:00:00+00:00", "2026-03-26T00:00:00+00:00", limit=5,
+        )
+        assert len(meals) == 2

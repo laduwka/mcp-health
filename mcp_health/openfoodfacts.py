@@ -29,24 +29,32 @@ def _get_off_conn() -> sqlite3.Connection | None:
         return None
 
 
-def search(query: str, limit: int = 10) -> list[dict]:
-    """Search local OFF database by product name using FTS5."""
+def search(query: str, limit: int = 10, country: str | None = None) -> list[dict]:
+    """Search local OFF database by product name using FTS5.
+
+    When country is set (e.g. 'en:canada'), results are filtered to products
+    sold in that country via the countries_tags column.
+    """
     conn = _get_off_conn()
     if conn is None:
         return []
 
     start = time.monotonic()
     try:
-        rows = conn.execute(
+        sql = (
             "SELECT p.code, p.product_name, p.brands, "
             "p.kcal_per_100, p.protein_per_100, p.fat_per_100, p.carbs_per_100 "
             "FROM products_fts fts "
             "JOIN products p ON p.rowid = fts.rowid "
             "WHERE products_fts MATCH ? "
-            "ORDER BY rank "
-            "LIMIT ?",
-            (query, limit),
-        ).fetchall()
+        )
+        params: list = [query]
+        if country:
+            sql += "AND p.countries_tags LIKE '%' || ? || '%' "
+            params.append(country)
+        sql += "ORDER BY rank LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
     except sqlite3.OperationalError as exc:
         OFF_DB_QUERIES.labels(method="search").inc()
         _log.warning("OFF search error", extra={"query": query, "error": str(exc)})

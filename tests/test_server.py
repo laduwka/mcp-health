@@ -367,6 +367,128 @@ class TestMetricsEndpoint:
         assert resp.status_code == 200
 
 
+class TestGetRecentMeals:
+    def test_returns_recent_breakfasts(self):
+        p = server.add_product("Oats", 389, 16.9, 6.9, 66.3)
+        server.log_meal(
+            items=[{"product_id": p["product_id"], "weight_grams": 80}],
+            meal_type="breakfast",
+            timestamp="2026-03-24T12:00:00+00:00",
+        )
+        server.log_meal(
+            items=[{"product_id": p["product_id"], "weight_grams": 80}],
+            meal_type="breakfast",
+            timestamp="2026-03-25T12:00:00+00:00",
+        )
+        server.log_meal(
+            items=[{"product_id": p["product_id"], "weight_grams": 100}],
+            meal_type="lunch",
+            timestamp="2026-03-25T16:00:00+00:00",
+        )
+        result = server.get_recent_meals(meal_type="breakfast", days=7)
+        assert len(result["meals"]) == 2
+        assert all(m["meal_type"] == "breakfast" for m in result["meals"])
+        # Items should have product_id and weight
+        items = result["meals"][0]["items"]
+        assert items[0]["product_id"] == p["product_id"]
+        assert items[0]["weight_grams"] == 80
+
+    def test_no_filter_returns_all(self):
+        p = server.add_product("Egg", 155, 13, 11, 1.1)
+        server.log_meal(
+            items=[{"product_id": p["product_id"], "weight_grams": 100}],
+            meal_type="breakfast",
+            timestamp="2026-03-25T12:00:00+00:00",
+        )
+        server.log_meal(
+            items=[{"product_id": p["product_id"], "weight_grams": 200}],
+            meal_type="lunch",
+            timestamp="2026-03-25T16:00:00+00:00",
+        )
+        result = server.get_recent_meals(days=7)
+        assert len(result["meals"]) == 2
+
+
+class TestSetProductServing:
+    def test_set_serving(self):
+        p = server.add_product("Protein Powder", 400, 80, 5, 10)
+        result = server.set_product_serving(p["product_id"], 39.0, "1 scoop")
+        assert result["status"] == "updated"
+        assert result["default_serving_grams"] == 39.0
+        assert result["serving_label"] == "1 scoop"
+
+        # Verify in search results
+        results = server.search_product("protein powder", include_off=False)
+        assert results[0]["default_serving_grams"] == 39.0
+
+    def test_not_found(self):
+        result = server.set_product_serving(99999, 100.0)
+        assert result["status"] == "not_found"
+
+
+class TestAutoLearnServing:
+    def test_auto_learns_after_3_uses(self):
+        p = server.add_product("Protein Scoop", 400, 80, 5, 10)
+        pid = p["product_id"]
+
+        # Log 3 times with same weight
+        for i in range(3):
+            server.log_meal(
+                items=[{"product_id": pid, "weight_grams": 39}],
+                timestamp=f"2026-03-{20+i:02d}T12:00:00+00:00",
+            )
+
+        # Check that default_serving_grams was auto-set
+        conn = server._get_conn()
+        product = db.get_product(conn, pid)
+        assert product["default_serving_grams"] == 39.0
+
+    def test_no_auto_learn_with_varied_weights(self):
+        p = server.add_product("Mixed Weight", 100, 10, 5, 15)
+        pid = p["product_id"]
+
+        # Log 3 times with different weights (no dominant one)
+        server.log_meal(
+            items=[{"product_id": pid, "weight_grams": 100}],
+            timestamp="2026-03-20T12:00:00+00:00",
+        )
+        server.log_meal(
+            items=[{"product_id": pid, "weight_grams": 200}],
+            timestamp="2026-03-21T12:00:00+00:00",
+        )
+        server.log_meal(
+            items=[{"product_id": pid, "weight_grams": 300}],
+            timestamp="2026-03-22T12:00:00+00:00",
+        )
+
+        conn = server._get_conn()
+        product = db.get_product(conn, pid)
+        assert product["default_serving_grams"] is None
+
+
+class TestSearchSkipsOFF:
+    @patch("mcp_health.openfoodfacts.search")
+    def test_skips_off_when_local_results_sufficient(self, mock_off_search):
+        # Add products with usage > 0
+        for name in ["Apple", "Apricot", "Avocado", "Asparagus", "Artichoke"]:
+            p = server.add_product(name, 50, 1, 0.2, 10)
+            conn = server._get_conn()
+            db.increment_product_usage(conn, p["product_id"])
+
+        results = server.search_product("a", limit=5, include_off=True)
+        mock_off_search.assert_not_called()
+        assert len(results) == 5
+        assert all(r["source"] == "local" for r in results)
+
+    @patch("mcp_health.openfoodfacts.search")
+    def test_calls_off_when_local_has_unused_products(self, mock_off_search):
+        mock_off_search.return_value = []
+        # Add product without any usage
+        server.add_product("Apple", 50, 1, 0.2, 10)
+        server.search_product("apple", limit=5, include_off=True)
+        mock_off_search.assert_called_once()
+
+
 class TestLegacyBearerAuth:
     """Verify legacy Bearer auth works when OAUTH_ISSUER is not set."""
 

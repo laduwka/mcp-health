@@ -130,15 +130,18 @@ def add_product(
 @mcp.tool()
 @instrument_tool
 def search_product(query: str, limit: int = 5, include_off: bool = True) -> list[dict]:
-    """Search for products by name in local DB and OpenFoodFacts. Returns top matches sorted by usage frequency.
-    IMPORTANT: Always call this BEFORE log_meal to get accurate nutritional data. Do not guess KBJU values — use product_id from search results."""
+    """Search for products by name in local DB and optionally OpenFoodFacts (filtered by user's country). Returns matches sorted by usage frequency, with default_serving_grams when available. For known products (usage_count > 0), use product_id and default_serving directly — no need to ask clarifying questions. Set include_off=False for products the user logs regularly. PREFER get_recent_meals or get_top_products when logging routine meals."""
     conn = _get_conn()
     local = db.search_products(conn, query, limit)
     results = [{"source": "local", **p} for p in local]
 
-    if include_off and len(results) < limit:
+    # Smart OFF skip: if all local results are known products and we have enough, skip OFF
+    all_known = all(r.get("usage_count", 0) > 0 for r in results)
+    if include_off and (not all_known or len(results) < limit):
         remaining = limit - len(results)
-        off_results = openfoodfacts.search(query, limit=remaining)
+        off_results = openfoodfacts.search(
+            query, limit=remaining, country=config.OFF_COUNTRY or None
+        )
         local_barcodes = {r.get("barcode") for r in results if r.get("barcode")}
         for p in off_results:
             if p.get("barcode") and p["barcode"] in local_barcodes:
@@ -195,7 +198,8 @@ def log_meal(
     notes: str | None = None,
     timestamp: str | None = None,
 ) -> dict:
-    """Log a meal with one or more items. Each item needs product_id+weight_grams. Always search_product first to get the product_id with verified nutritional data. Ad-hoc nutrition (name, kcal, protein, fat, carbs, weight_grams) is only for cases when the product is not found in search at all."""
+    """Log a meal. Each item needs product_id + weight_grams.
+    WORKFLOW: (1) If "same as yesterday" → call get_recent_meals, reuse items directly. (2) For routine products → call search_product(include_off=False), use product_id + default_serving_grams. (3) Only ask clarifying questions for products never logged before (usage_count=0, no default_serving_grams). Ad-hoc nutrition only when product not found in any search."""
     conn = _get_conn()
     calculated_items = []
     all_warnings = []
@@ -225,6 +229,14 @@ def log_meal(
                 }
             )
             db.increment_product_usage(conn, item["product_id"])
+            # Auto-learn serving size
+            if not product.get("default_serving_grams") and product["usage_count"] >= 2:
+                # usage_count was just incremented, so >= 2 means this is the 3rd+ use
+                common = db.get_most_common_serving(conn, item["product_id"])
+                if common and common["ratio"] >= 0.6:
+                    db.update_product_serving(
+                        conn, item["product_id"], common["weight_grams"]
+                    )
         else:
             per_amount = item.get("per_amount", 100.0)
             normalized = calc.normalize_per_100(
@@ -507,7 +519,7 @@ def get_trends(days: int = 30, metrics: list[str] | None = None) -> dict:
 @mcp.tool()
 @instrument_tool
 def get_top_products(days: int = 30, limit: int = 20) -> dict:
-    """Get most frequently consumed products over the last N days. Useful for shopping lists and understanding eating habits. Returns products sorted by usage frequency with last_used date."""
+    """Get most frequently consumed products with product_id, nutrition, and default serving sizes. Call this BEFORE search_product when logging routine meals. Returns products sorted by usage frequency with last_used date."""
     conn = _get_conn()
     today = _today()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=days)).strftime(
@@ -674,6 +686,56 @@ def update_meal_item(item_id: int, weight_grams: float) -> dict:
             **portion,
         },
         "updated_daily_totals": updated_totals,
+    }
+
+
+# --- Tool: get_recent_meals ---
+
+
+@mcp.tool()
+@instrument_tool
+def get_recent_meals(
+    meal_type: str | None = None, days: int = 7, limit: int = 5
+) -> dict:
+    """Get recent meals with full items (product_id, name, weight_grams, default_serving). Enables "same as yesterday's breakfast" without any search calls. Returns meals newest-first."""
+    conn = _get_conn()
+    today = _today()
+    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=days)).strftime(
+        "%Y-%m-%d"
+    )
+    start_utc, _ = db._date_range_utc(start)
+    _, end_utc = db._date_range_utc(today)
+    meals = db.get_recent_meals_by_type(conn, meal_type, start_utc, end_utc, limit)
+    # Convert timestamps to local dates for display
+    for meal in meals:
+        meal["date"] = _utc_to_local_date(meal["logged_at"])
+    return {
+        "period": {"start": start, "end": today, "days": days},
+        "meal_type_filter": meal_type,
+        "meals": meals,
+    }
+
+
+# --- Tool: set_product_serving ---
+
+
+@mcp.tool()
+@instrument_tool
+def set_product_serving(
+    product_id: int, serving_grams: float, label: str | None = None
+) -> dict:
+    """Store default serving size for a product so it doesn't need to be asked every time. E.g. set_product_serving(42, 39, "1 scoop") for a protein powder."""
+    conn = _get_conn()
+    product = db.get_product(conn, product_id)
+    if not product:
+        return {"status": "not_found", "product_id": product_id}
+    db.update_product_serving(conn, product_id, serving_grams, label)
+    return {
+        "status": "updated",
+        "product_id": product_id,
+        "product_name": product["name"],
+        "default_serving_grams": serving_grams,
+        "serving_label": label,
     }
 
 
