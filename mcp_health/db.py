@@ -138,6 +138,32 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_oauth_tokens_type ON oauth_tokens(token_type);
         CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expires ON oauth_tokens(expires_at);
+
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            activity_type TEXT NOT NULL,
+            start_at TEXT NOT NULL,
+            end_at TEXT,
+            duration_min REAL,
+            kcal_burned REAL,
+            distance_m REAL,
+            avg_heart_rate REAL,
+            notes TEXT,
+            source TEXT DEFAULT 'manual',
+            logged_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_start ON activity_log(start_at);
+
+        CREATE TABLE IF NOT EXISTS cycle_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            value TEXT,
+            date TEXT NOT NULL,
+            notes TEXT,
+            source TEXT DEFAULT 'manual',
+            logged_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_cycle_date ON cycle_log(date);
     """)
     conn.commit()
 
@@ -562,3 +588,175 @@ def cleanup_expired_tokens(conn: sqlite3.Connection) -> int:
     cur = conn.execute("DELETE FROM oauth_tokens WHERE expires_at < ?", (_now_utc(),))
     conn.commit()
     return cur.rowcount
+
+
+# --- Activity ---
+
+
+@timed_db
+def upsert_activity(
+    conn: sqlite3.Connection,
+    activity_type: str,
+    start_at: str,
+    end_at: str | None = None,
+    duration_min: float | None = None,
+    kcal_burned: float | None = None,
+    distance_m: float | None = None,
+    avg_heart_rate: float | None = None,
+    notes: str | None = None,
+    source: str = "manual",
+) -> int:
+    """Insert or update an activity. Deduplicates by (activity_type, start_at, source)."""
+    existing = conn.execute(
+        "SELECT id FROM activity_log WHERE activity_type = ? AND start_at = ? AND source = ?",
+        (activity_type, start_at, source),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            """UPDATE activity_log
+               SET end_at = ?, duration_min = ?, kcal_burned = ?, distance_m = ?,
+                   avg_heart_rate = ?, notes = ?, logged_at = ?
+               WHERE id = ?""",
+            (
+                end_at,
+                duration_min,
+                kcal_burned,
+                distance_m,
+                avg_heart_rate,
+                notes,
+                _now_utc(),
+                existing["id"],
+            ),
+        )
+        conn.commit()
+        return existing["id"]
+    cur = conn.execute(
+        """INSERT INTO activity_log
+           (activity_type, start_at, end_at, duration_min, kcal_burned, distance_m, avg_heart_rate, notes, source, logged_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            activity_type,
+            start_at,
+            end_at,
+            duration_min,
+            kcal_burned,
+            distance_m,
+            avg_heart_rate,
+            notes,
+            source,
+            _now_utc(),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+@timed_db
+def get_activities(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[dict]:
+    """Get activities within a date range (based on start_at)."""
+    start_utc, _ = _date_range_utc(start_date)
+    _, end_utc = _date_range_utc(end_date)
+    rows = conn.execute(
+        """SELECT * FROM activity_log
+           WHERE start_at >= ? AND start_at < ?
+           ORDER BY start_at""",
+        (start_utc, end_utc),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@timed_db
+def get_activity_summary(conn: sqlite3.Connection, date_str: str) -> dict:
+    """Get aggregated activity stats for a single day."""
+    start_utc, end_utc = _date_range_utc(date_str)
+    row = conn.execute(
+        """SELECT
+               COUNT(*) as count,
+               COALESCE(SUM(duration_min), 0) as total_duration_min,
+               COALESCE(SUM(kcal_burned), 0) as total_kcal_burned,
+               COALESCE(SUM(distance_m), 0) as total_distance_m
+           FROM activity_log
+           WHERE start_at >= ? AND start_at < ?""",
+        (start_utc, end_utc),
+    ).fetchone()
+    return dict(row)
+
+
+@timed_db
+def get_activity_range_summary(conn: sqlite3.Connection, start: str, end: str) -> dict:
+    """Get aggregated activity stats for a date range."""
+    start_utc, _ = _date_range_utc(start)
+    _, end_utc = _date_range_utc(end)
+    row = conn.execute(
+        """SELECT
+               COUNT(*) as count,
+               COALESCE(SUM(duration_min), 0) as total_duration_min,
+               COALESCE(SUM(kcal_burned), 0) as total_kcal_burned,
+               COALESCE(SUM(distance_m), 0) as total_distance_m
+           FROM activity_log
+           WHERE start_at >= ? AND start_at < ?""",
+        (start_utc, end_utc),
+    ).fetchone()
+    return dict(row)
+
+
+# --- Cycle ---
+
+
+@timed_db
+def upsert_cycle_event(
+    conn: sqlite3.Connection,
+    event_type: str,
+    date: str,
+    value: str | None = None,
+    notes: str | None = None,
+    source: str = "manual",
+) -> int:
+    """Insert or update a cycle event. Deduplicates by (event_type, date, source)."""
+    existing = conn.execute(
+        "SELECT id FROM cycle_log WHERE event_type = ? AND date = ? AND source = ?",
+        (event_type, date, source),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE cycle_log SET value = ?, notes = ?, logged_at = ? WHERE id = ?",
+            (value, notes, _now_utc(), existing["id"]),
+        )
+        conn.commit()
+        return existing["id"]
+    cur = conn.execute(
+        """INSERT INTO cycle_log (event_type, value, date, notes, source, logged_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (event_type, value, date, notes, source, _now_utc()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+@timed_db
+def get_cycle_events(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM cycle_log WHERE date >= ? AND date <= ? ORDER BY date",
+        (start_date, end_date),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@timed_db
+def get_cycle_flow_dates(conn: sqlite3.Connection, months: int = 6) -> list[str]:
+    """Get all dates with menstrual flow events, ordered by date (last N months)."""
+    today = _today_local()
+    start = (
+        datetime.strptime(today, "%Y-%m-%d") - timedelta(days=months * 30)
+    ).strftime("%Y-%m-%d")
+    rows = conn.execute(
+        """SELECT DISTINCT date FROM cycle_log
+           WHERE event_type = 'flow' AND date >= ?
+           ORDER BY date""",
+        (start,),
+    ).fetchall()
+    return [r["date"] for r in rows]
