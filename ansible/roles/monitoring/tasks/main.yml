@@ -28,10 +28,24 @@
     insertafter: EOF
   notify: restart victoriametrics
 
-- name: Deploy Grafana dashboard
-  copy:
-    src: "{{ playbook_dir }}/../grafana/mcp-health-dashboard.json"
-    dest: /var/lib/grafana/dashboards/mcp-health-dashboard.json
+- name: Deploy Loki datasource to Grafana
+  template:
+    src: loki-datasource.yml.j2
+    dest: /etc/grafana/provisioning/datasources/loki.yml
     owner: grafana
     group: grafana
     mode: "0644"
+  notify: restart grafana
+
+- name: Deploy Grafana dashboards
+  copy:
+    src: "{{ item.src }}"
+    dest: "/var/lib/grafana/dashboards/{{ item.dest }}"
+    owner: grafana
+    group: grafana
+    mode: "0644"
+  loop:
+    - src: "{{ playbook_dir }}/../grafana/mcp-health-dashboard.json"
+      dest: mcp-health-dashboard.json
+    - src: "{{ playbook_dir }}/../grafana/logs-dashboard.json"
+      dest: logs-dashboard.json

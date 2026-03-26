@@ -12,5 +12,7 @@
       tags: [nginx, ssl]
     - role: monitoring
       tags: [monitoring]
+    - role: loki
+      tags: [loki, monitoring]
     - role: backup
       tags: [backup]
