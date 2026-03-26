@@ -217,9 +217,7 @@ def update_product_serving(
     conn.commit()
 
 
-def get_most_common_serving(
-    conn: sqlite3.Connection, product_id: int
-) -> dict | None:
+def get_most_common_serving(conn: sqlite3.Connection, product_id: int) -> dict | None:
     """Return the most common weight_grams for a product and its frequency ratio."""
     rows = conn.execute(
         """SELECT weight_grams, COUNT(*) as cnt
@@ -375,7 +373,8 @@ def get_recent_meals_by_type(
                       p.default_serving_grams, p.serving_label
                FROM meal_items mi
                LEFT JOIN products p ON mi.product_id = p.id
-               WHERE mi.meal_id = ?""",
+               WHERE mi.meal_id = ?
+               ORDER BY mi.id""",
             (meal_dict["id"],),
         ).fetchall()
         meal_dict["items"] = [dict(i) for i in items]

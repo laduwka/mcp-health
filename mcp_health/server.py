@@ -137,8 +137,8 @@ def search_product(query: str, limit: int = 5, include_off: bool = True) -> list
 
     # Smart OFF skip: if all local results are known products and we have enough, skip OFF
     all_known = all(r.get("usage_count", 0) > 0 for r in results)
-    if include_off and (not all_known or len(results) < limit):
-        remaining = limit - len(results)
+    remaining = limit - len(results)
+    if include_off and remaining > 0 and (not all_known or len(results) < limit):
         off_results = openfoodfacts.search(
             query, limit=remaining, country=config.OFF_COUNTRY or None
         )
@@ -519,7 +519,7 @@ def get_trends(days: int = 30, metrics: list[str] | None = None) -> dict:
 @mcp.tool()
 @instrument_tool
 def get_top_products(days: int = 30, limit: int = 20) -> dict:
-    """Get most frequently consumed products with product_id, nutrition, and default serving sizes. Call this BEFORE search_product when logging routine meals. Returns products sorted by usage frequency with last_used date."""
+    """Get most frequently consumed products with product_id and nutrition totals. Call this BEFORE search_product when logging routine meals. Returns products sorted by usage frequency with last_used date."""
     conn = _get_conn()
     today = _today()
     start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=days)).strftime(
@@ -659,7 +659,10 @@ def update_meal_item(item_id: int, weight_grams: float) -> dict:
     else:
         old_weight = item["weight_grams"]
         if old_weight == 0:
-            return {"status": "error", "message": "cannot scale ad-hoc item with zero weight"}
+            return {
+                "status": "error",
+                "message": "cannot scale ad-hoc item with zero weight",
+            }
         ratio = weight_grams / old_weight
         portion = {
             "kcal": round(item["kcal"] * ratio, 1),
@@ -669,8 +672,13 @@ def update_meal_item(item_id: int, weight_grams: float) -> dict:
         }
 
     db.update_meal_item(
-        conn, item_id, weight_grams,
-        portion["kcal"], portion["protein"], portion["fat"], portion["carbs"],
+        conn,
+        item_id,
+        weight_grams,
+        portion["kcal"],
+        portion["protein"],
+        portion["fat"],
+        portion["carbs"],
     )
 
     meal = db.get_meal(conn, item["meal_id"])

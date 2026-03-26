@@ -303,11 +303,17 @@ class TestUpdateMealItem:
 
     def test_update_adhoc_item(self):
         meal = server.log_meal(
-            items=[{
-                "name": "Soup",
-                "kcal": 80, "protein": 5, "fat": 3, "carbs": 8,
-                "weight_grams": 200, "per_amount": 100,
-            }],
+            items=[
+                {
+                    "name": "Soup",
+                    "kcal": 80,
+                    "protein": 5,
+                    "fat": 3,
+                    "carbs": 8,
+                    "weight_grams": 200,
+                    "per_amount": 100,
+                }
+            ],
             timestamp="2026-03-20T12:00:00",
         )
         conn = server._get_conn()
@@ -435,7 +441,7 @@ class TestAutoLearnServing:
         for i in range(3):
             server.log_meal(
                 items=[{"product_id": pid, "weight_grams": 39}],
-                timestamp=f"2026-03-{20+i:02d}T12:00:00+00:00",
+                timestamp=f"2026-03-{20 + i:02d}T12:00:00+00:00",
             )
 
         # Check that default_serving_grams was auto-set

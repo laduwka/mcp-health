@@ -32,9 +32,27 @@ def _create_test_db(path: str):
     conn.executemany(
         "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            ("3017620422003", "Nutella", "Ferrero", 539.0, 6.3, 30.9, 57.5, "en:france,en:canada"),
+            (
+                "3017620422003",
+                "Nutella",
+                "Ferrero",
+                539.0,
+                6.3,
+                30.9,
+                57.5,
+                "en:france,en:canada",
+            ),
             ("123", "Chocolate Bar", "Brand A", 545.0, 5.0, 30.0, 60.0, "en:canada"),
-            ("789", "Another Chocolate", "Brand C", 500.0, 7.0, 28.0, 55.0, "en:russia"),
+            (
+                "789",
+                "Another Chocolate",
+                "Brand C",
+                500.0,
+                7.0,
+                28.0,
+                55.0,
+                "en:russia",
+            ),
             ("999", "Banana Chips", None, 520.0, 2.0, 28.0, 65.0, None),
         ],
     )

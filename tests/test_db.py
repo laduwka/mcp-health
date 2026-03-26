@@ -340,14 +340,38 @@ class TestMostCommonServing:
         # Log 3x 200g, 1x 100g
         for i in range(3):
             insert_meal(
-                conn, "lunch", None, f"2026-03-{20+i:02d}T12:00:00+00:00",
-                [{"product_id": pid, "name": "Rice", "weight_grams": 200,
-                  "kcal": 260, "protein": 5.4, "fat": 0.6, "carbs": 56}],
+                conn,
+                "lunch",
+                None,
+                f"2026-03-{20 + i:02d}T12:00:00+00:00",
+                [
+                    {
+                        "product_id": pid,
+                        "name": "Rice",
+                        "weight_grams": 200,
+                        "kcal": 260,
+                        "protein": 5.4,
+                        "fat": 0.6,
+                        "carbs": 56,
+                    }
+                ],
             )
         insert_meal(
-            conn, "dinner", None, "2026-03-23T18:00:00+00:00",
-            [{"product_id": pid, "name": "Rice", "weight_grams": 100,
-              "kcal": 130, "protein": 2.7, "fat": 0.3, "carbs": 28}],
+            conn,
+            "dinner",
+            None,
+            "2026-03-23T18:00:00+00:00",
+            [
+                {
+                    "product_id": pid,
+                    "name": "Rice",
+                    "weight_grams": 100,
+                    "kcal": 130,
+                    "protein": 2.7,
+                    "fat": 0.3,
+                    "carbs": 28,
+                }
+            ],
         )
 
         common = get_most_common_serving(conn, pid)
@@ -382,24 +406,63 @@ class TestRecentMealsByType:
             created_at="2026-01-01T00:00:00",
         )
         insert_meal(
-            conn, "breakfast", None, "2026-03-24T12:00:00+00:00",
-            [{"product_id": pid, "name": "Oats", "weight_grams": 80,
-              "kcal": 311.2, "protein": 13.5, "fat": 5.5, "carbs": 53.0}],
+            conn,
+            "breakfast",
+            None,
+            "2026-03-24T12:00:00+00:00",
+            [
+                {
+                    "product_id": pid,
+                    "name": "Oats",
+                    "weight_grams": 80,
+                    "kcal": 311.2,
+                    "protein": 13.5,
+                    "fat": 5.5,
+                    "carbs": 53.0,
+                }
+            ],
         )
         insert_meal(
-            conn, "breakfast", None, "2026-03-25T12:00:00+00:00",
-            [{"product_id": pid, "name": "Oats", "weight_grams": 80,
-              "kcal": 311.2, "protein": 13.5, "fat": 5.5, "carbs": 53.0}],
+            conn,
+            "breakfast",
+            None,
+            "2026-03-25T12:00:00+00:00",
+            [
+                {
+                    "product_id": pid,
+                    "name": "Oats",
+                    "weight_grams": 80,
+                    "kcal": 311.2,
+                    "protein": 13.5,
+                    "fat": 5.5,
+                    "carbs": 53.0,
+                }
+            ],
         )
         insert_meal(
-            conn, "lunch", None, "2026-03-25T16:00:00+00:00",
-            [{"product_id": pid, "name": "Oats", "weight_grams": 100,
-              "kcal": 389, "protein": 16.9, "fat": 6.9, "carbs": 66.3}],
+            conn,
+            "lunch",
+            None,
+            "2026-03-25T16:00:00+00:00",
+            [
+                {
+                    "product_id": pid,
+                    "name": "Oats",
+                    "weight_grams": 100,
+                    "kcal": 389,
+                    "protein": 16.9,
+                    "fat": 6.9,
+                    "carbs": 66.3,
+                }
+            ],
         )
 
         meals = get_recent_meals_by_type(
-            conn, "breakfast",
-            "2026-03-24T00:00:00+00:00", "2026-03-26T00:00:00+00:00", limit=5,
+            conn,
+            "breakfast",
+            "2026-03-24T00:00:00+00:00",
+            "2026-03-26T00:00:00+00:00",
+            limit=5,
         )
         assert len(meals) == 2
         assert all(m["meal_type"] == "breakfast" for m in meals)
@@ -407,18 +470,43 @@ class TestRecentMealsByType:
 
     def test_no_filter(self, conn):
         insert_meal(
-            conn, "breakfast", None, "2026-03-25T12:00:00+00:00",
-            [{"name": "A", "weight_grams": 100,
-              "kcal": 200, "protein": 10, "fat": 5, "carbs": 30}],
+            conn,
+            "breakfast",
+            None,
+            "2026-03-25T12:00:00+00:00",
+            [
+                {
+                    "name": "A",
+                    "weight_grams": 100,
+                    "kcal": 200,
+                    "protein": 10,
+                    "fat": 5,
+                    "carbs": 30,
+                }
+            ],
         )
         insert_meal(
-            conn, "lunch", None, "2026-03-25T16:00:00+00:00",
-            [{"name": "B", "weight_grams": 100,
-              "kcal": 300, "protein": 15, "fat": 8, "carbs": 40}],
+            conn,
+            "lunch",
+            None,
+            "2026-03-25T16:00:00+00:00",
+            [
+                {
+                    "name": "B",
+                    "weight_grams": 100,
+                    "kcal": 300,
+                    "protein": 15,
+                    "fat": 8,
+                    "carbs": 40,
+                }
+            ],
         )
 
         meals = get_recent_meals_by_type(
-            conn, None,
-            "2026-03-25T00:00:00+00:00", "2026-03-26T00:00:00+00:00", limit=5,
+            conn,
+            None,
+            "2026-03-25T00:00:00+00:00",
+            "2026-03-26T00:00:00+00:00",
+            limit=5,
         )
         assert len(meals) == 2

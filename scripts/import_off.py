@@ -274,7 +274,7 @@ def delta_update(output_path: str):
                 fat = _safe_float(str(n.get("fat_100g", ""))) or 0.0
                 carbs = _safe_float(str(n.get("carbohydrates_100g", ""))) or 0.0
                 brands = (doc.get("brands") or "").strip() or None
-                countries = (doc.get("countries_tags") or "")
+                countries = doc.get("countries_tags") or ""
                 if isinstance(countries, list):
                     countries = ",".join(countries)
                 countries = countries.strip() or None
