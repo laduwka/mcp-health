@@ -15,6 +15,21 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  datasette:
+    image: datasetteproject/datasette:latest
+    command: >
+      datasette serve
+      /data/fitness.db /data/off_products.db
+      --host 0.0.0.0 --port 8001
+      --setting default_page_size 50
+      --setting sql_time_limit_ms 5000
+      --setting max_returned_rows 1000
+    volumes:
+      - ./data:/data:ro
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
   # Uncomment for auto-TLS reverse proxy:
   # caddy:
   #   image: caddy:2

@@ -15,3 +15,24 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  datasette:
+    image: datasetteproject/datasette:latest
+    command: >
+      datasette serve
+      /data/fitness.db /data/off_products.db
+      --host 0.0.0.0 --port 8001
+      --setting base_url /datasette/
+      --setting default_page_size 50
+      --setting sql_time_limit_ms 5000
+      --setting max_returned_rows 1000
+    volumes:
+      - ./data:/data:ro
+    ports:
+      - "127.0.0.1:{{ datasette_port }}:8001"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
