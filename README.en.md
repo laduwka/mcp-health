@@ -28,6 +28,8 @@ MCP server for nutrition and weight tracking. Works as an HTTP endpoint with OAu
 | `get_top_products` | Top products over N days (for shopping lists, habit analysis) |
 | `update_goals` | Set/update daily calorie and macro goals |
 | `delete_meal` | Delete a logged meal |
+| `delete_meal_item` | Delete a single item from a meal (deletes meal if last item) |
+| `update_meal_item` | Update item weight with automatic macro recalculation |
 
 ## Quick Start
 

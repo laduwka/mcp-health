@@ -584,6 +584,99 @@ def delete_meal(meal_id: int) -> dict:
     }
 
 
+# --- Tool 11: delete_meal_item ---
+
+
+@mcp.tool()
+@instrument_tool
+def delete_meal_item(item_id: int) -> dict:
+    """Delete a single item from a meal by item ID. If it was the last item, the meal is deleted too."""
+    conn = _get_conn()
+    item = db.get_meal_item(conn, item_id)
+    if not item:
+        return {"status": "not_found", "item_id": item_id}
+
+    meal_id = item["meal_id"]
+    meal = db.get_meal(conn, meal_id)
+    meal_date = _utc_to_local_date(meal["logged_at"])
+
+    db.delete_meal_item(conn, item_id)
+
+    meal_deleted = False
+    if db.count_meal_items(conn, meal_id) == 0:
+        db.delete_meal(conn, meal_id)
+        meal_deleted = True
+
+    updated_totals = db.get_daily_totals(conn, meal_date)
+    return {
+        "status": "deleted",
+        "item_id": item_id,
+        "meal_id": meal_id,
+        "meal_deleted": meal_deleted,
+        "updated_daily_totals": updated_totals,
+    }
+
+
+# --- Tool 12: update_meal_item ---
+
+
+@mcp.tool()
+@instrument_tool
+def update_meal_item(item_id: int, weight_grams: float) -> dict:
+    """Update the weight of a meal item and recalculate its nutrition. Works with both product-based and ad-hoc items."""
+    if weight_grams <= 0:
+        return {"status": "error", "message": "weight_grams must be > 0"}
+
+    conn = _get_conn()
+    item = db.get_meal_item(conn, item_id)
+    if not item:
+        return {"status": "not_found", "item_id": item_id}
+
+    product = None
+    if item["product_id"]:
+        product = db.get_product(conn, item["product_id"])
+
+    if product:
+        portion = calc.calculate_portion(
+            weight_grams,
+            product["kcal_per_100"],
+            product["protein_per_100"],
+            product["fat_per_100"],
+            product["carbs_per_100"],
+        )
+    else:
+        old_weight = item["weight_grams"]
+        if old_weight == 0:
+            return {"status": "error", "message": "cannot scale ad-hoc item with zero weight"}
+        ratio = weight_grams / old_weight
+        portion = {
+            "kcal": round(item["kcal"] * ratio, 1),
+            "protein": round(item["protein"] * ratio, 1),
+            "fat": round(item["fat"] * ratio, 1),
+            "carbs": round(item["carbs"] * ratio, 1),
+        }
+
+    db.update_meal_item(
+        conn, item_id, weight_grams,
+        portion["kcal"], portion["protein"], portion["fat"], portion["carbs"],
+    )
+
+    meal = db.get_meal(conn, item["meal_id"])
+    meal_date = _utc_to_local_date(meal["logged_at"])
+    updated_totals = db.get_daily_totals(conn, meal_date)
+
+    return {
+        "status": "updated",
+        "item": {
+            "id": item_id,
+            "name": item["name"],
+            "weight_grams": weight_grams,
+            **portion,
+        },
+        "updated_daily_totals": updated_totals,
+    }
+
+
 # --- ASGI app composition ---
 
 _metrics_app = make_asgi_app()

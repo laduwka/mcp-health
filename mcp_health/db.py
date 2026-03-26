@@ -258,6 +258,42 @@ def delete_meal(conn: sqlite3.Connection, meal_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def get_meal_item(conn: sqlite3.Connection, item_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM meal_items WHERE id = ?", (item_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_meal_item(conn: sqlite3.Connection, item_id: int) -> bool:
+    cur = conn.execute("DELETE FROM meal_items WHERE id = ?", (item_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def count_meal_items(conn: sqlite3.Connection, meal_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM meal_items WHERE meal_id = ?", (meal_id,)
+    ).fetchone()
+    return row["cnt"]
+
+
+def update_meal_item(
+    conn: sqlite3.Connection,
+    item_id: int,
+    weight_grams: float,
+    kcal: float,
+    protein: float,
+    fat: float,
+    carbs: float,
+) -> None:
+    conn.execute(
+        """UPDATE meal_items
+           SET weight_grams = ?, kcal = ?, protein = ?, fat = ?, carbs = ?
+           WHERE id = ?""",
+        (weight_grams, kcal, protein, fat, carbs, item_id),
+    )
+    conn.commit()
+
+
 # --- Weight ---
 
 

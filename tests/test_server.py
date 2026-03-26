@@ -247,6 +247,84 @@ class TestDeleteMeal:
         assert result["status"] == "not_found"
 
 
+class TestDeleteMealItem:
+    def _log_two_item_meal(self):
+        p1 = server.add_product("Apple", 52, 0.3, 0.2, 14)
+        p2 = server.add_product("Banana", 89, 1.1, 0.3, 23)
+        result = server.log_meal(
+            items=[
+                {"product_id": p1["product_id"], "weight_grams": 150},
+                {"product_id": p2["product_id"], "weight_grams": 120},
+            ],
+            timestamp="2026-03-20T12:00:00",
+        )
+        conn = server._get_conn()
+        items = conn.execute(
+            "SELECT id FROM meal_items WHERE meal_id = ? ORDER BY id",
+            (result["meal_id"],),
+        ).fetchall()
+        return result["meal_id"], [i["id"] for i in items]
+
+    def test_delete_item_keeps_meal(self):
+        meal_id, item_ids = self._log_two_item_meal()
+        result = server.delete_meal_item(item_ids[0])
+        assert result["status"] == "deleted"
+        assert result["meal_deleted"] is False
+        assert result["meal_id"] == meal_id
+
+    def test_delete_last_item_deletes_meal(self):
+        meal_id, item_ids = self._log_two_item_meal()
+        server.delete_meal_item(item_ids[0])
+        result = server.delete_meal_item(item_ids[1])
+        assert result["status"] == "deleted"
+        assert result["meal_deleted"] is True
+
+    def test_delete_nonexistent_item(self):
+        result = server.delete_meal_item(99999)
+        assert result["status"] == "not_found"
+
+
+class TestUpdateMealItem:
+    def test_update_product_item(self):
+        p = server.add_product("Rice", 130, 2.7, 0.3, 28)
+        meal = server.log_meal(
+            items=[{"product_id": p["product_id"], "weight_grams": 200}],
+            timestamp="2026-03-20T12:00:00",
+        )
+        conn = server._get_conn()
+        item_id = conn.execute(
+            "SELECT id FROM meal_items WHERE meal_id = ?", (meal["meal_id"],)
+        ).fetchone()["id"]
+        result = server.update_meal_item(item_id, weight_grams=300)
+        assert result["status"] == "updated"
+        assert result["item"]["weight_grams"] == 300
+        assert result["item"]["kcal"] == pytest.approx(390.0, abs=0.1)
+        assert result["item"]["protein"] == pytest.approx(8.1, abs=0.1)
+
+    def test_update_adhoc_item(self):
+        meal = server.log_meal(
+            items=[{
+                "name": "Soup",
+                "kcal": 80, "protein": 5, "fat": 3, "carbs": 8,
+                "weight_grams": 200, "per_amount": 100,
+            }],
+            timestamp="2026-03-20T12:00:00",
+        )
+        conn = server._get_conn()
+        item_id = conn.execute(
+            "SELECT id FROM meal_items WHERE meal_id = ?", (meal["meal_id"],)
+        ).fetchone()["id"]
+        # scale from 200 to 300 → ratio 1.5
+        result = server.update_meal_item(item_id, weight_grams=300)
+        assert result["status"] == "updated"
+        assert result["item"]["kcal"] == pytest.approx(240.0, abs=0.1)
+        assert result["item"]["protein"] == pytest.approx(15.0, abs=0.1)
+
+    def test_update_nonexistent_item(self):
+        result = server.update_meal_item(99999, weight_grams=100)
+        assert result["status"] == "not_found"
+
+
 class TestWeeklyReportAndTrends:
     def test_weekly_report(self):
         server.update_goals(daily_kcal=2000)
