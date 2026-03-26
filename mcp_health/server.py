@@ -1,3 +1,5 @@
+import json
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -14,6 +16,10 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from . import calc, config, db, openfoodfacts
 from .log import get_logger
 from .metrics import (
+    ACTIVITIES_LOGGED,
+    CYCLE_EVENTS_LOGGED,
+    HEALTH_IMPORT_LATENCY,
+    HEALTH_IMPORTS,
     MEALS_LOGGED,
     PRODUCTS_CREATED,
     WEIGHT_ENTRIES,
@@ -350,19 +356,23 @@ def log_weight(weight_kg: float, date: str | None = None) -> dict:
 @mcp.tool()
 @instrument_tool
 def get_daily_summary(date: str | None = None) -> dict:
-    """Get full daily nutrition summary: meals, totals, targets, remaining."""
+    """Get full daily nutrition summary: meals, totals, targets, remaining, activity."""
     conn = _get_conn()
     date_str = date or _today()
     meals = db.get_meals_for_date(conn, date_str)
     totals = db.get_daily_totals(conn, date_str)
     goals = db.get_current_goals(conn)
     weight = db.get_weight_for_date(conn, date_str)
+    activity = db.get_activity_summary(conn, date_str)
 
     result = {
         "date": date_str,
         "meals": meals,
         "totals": totals,
     }
+
+    if activity["count"] > 0:
+        result["activity"] = activity
 
     if goals:
         targets = {
@@ -453,7 +463,10 @@ def get_weekly_report(week_start: str | None = None) -> dict:
             "carbs_g": goals.get("carbs_g"),
         }
 
-    return {
+    activity_summary = db.get_activity_range_summary(conn, start, end)
+    cycle_events = db.get_cycle_events(conn, start, end)
+
+    result = {
         "period": {"start": start, "end": end},
         "daily_averages": daily_averages,
         "daily_breakdown": daily_breakdown,
@@ -462,6 +475,14 @@ def get_weekly_report(week_start: str | None = None) -> dict:
         "weight_trend": weight_trend,
         "top_products": top_products,
     }
+
+    if activity_summary["count"] > 0:
+        result["activity"] = activity_summary
+
+    if cycle_events:
+        result["cycle_events"] = cycle_events
+
+    return result
 
 
 # --- Tool 7: get_trends ---
@@ -747,9 +768,251 @@ def set_product_serving(
     }
 
 
+# --- Tool: log_activity ---
+
+
+@mcp.tool()
+@instrument_tool
+def log_activity(
+    activity_type: str,
+    start_at: str,
+    duration_min: float | None = None,
+    kcal_burned: float | None = None,
+    distance_m: float | None = None,
+    avg_heart_rate: float | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Log a physical activity (workout, walk, etc.). start_at in ISO format."""
+    conn = _get_conn()
+    end_at = None
+    if duration_min and start_at:
+        try:
+            start_dt = datetime.fromisoformat(start_at)
+            end_at = (start_dt + timedelta(minutes=duration_min)).isoformat()
+        except ValueError:
+            pass
+    entry_id = db.upsert_activity(
+        conn,
+        activity_type=activity_type,
+        start_at=start_at,
+        end_at=end_at,
+        duration_min=duration_min,
+        kcal_burned=kcal_burned,
+        distance_m=distance_m,
+        avg_heart_rate=avg_heart_rate,
+        notes=notes,
+    )
+    ACTIVITIES_LOGGED.inc()
+    return {"entry_id": entry_id, "status": "logged", "activity_type": activity_type}
+
+
+# --- Tool: get_activity_summary ---
+
+
+@mcp.tool()
+@instrument_tool
+def get_activity_summary(date: str | None = None) -> dict:
+    """Get activity summary for a day: total duration, calories burned, distance."""
+    conn = _get_conn()
+    date_str = date or _today()
+    summary = db.get_activity_summary(conn, date_str)
+    activities = db.get_activities(conn, date_str, date_str)
+    return {
+        "date": date_str,
+        "summary": summary,
+        "activities": activities,
+    }
+
+
+# --- Tool: log_cycle_event ---
+
+
+@mcp.tool()
+@instrument_tool
+def log_cycle_event(
+    event_type: str,
+    date: str | None = None,
+    value: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Log a menstrual cycle event. event_type: 'flow', 'cervical_mucus', 'ovulation_test', 'basal_temp', 'spotting'. value: 'light'/'medium'/'heavy' for flow, temperature for basal_temp, etc."""
+    conn = _get_conn()
+    date_str = date or _today()
+    entry_id = db.upsert_cycle_event(
+        conn, event_type=event_type, date=date_str, value=value, notes=notes
+    )
+    CYCLE_EVENTS_LOGGED.inc()
+    return {"entry_id": entry_id, "status": "logged", "event_type": event_type, "date": date_str}
+
+
+# --- Tool: get_cycle_summary ---
+
+
+@mcp.tool()
+@instrument_tool
+def get_cycle_summary(months: int = 3) -> dict:
+    """Get menstrual cycle summary: recent events, average cycle length, last period start."""
+    conn = _get_conn()
+    today = _today()
+    start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+    events = db.get_cycle_events(conn, start, today)
+    flow_dates = db.get_cycle_flow_dates(conn, months)
+
+    # Calculate cycle lengths from flow dates
+    cycles = []
+    if flow_dates:
+        period_starts = []
+        prev_date = None
+        for d in flow_dates:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            if prev_date is None or (dt - prev_date).days > 3:
+                period_starts.append(d)
+            prev_date = dt
+
+        for i in range(1, len(period_starts)):
+            d1 = datetime.strptime(period_starts[i - 1], "%Y-%m-%d")
+            d2 = datetime.strptime(period_starts[i], "%Y-%m-%d")
+            cycles.append((d2 - d1).days)
+
+    avg_cycle_length = round(sum(cycles) / len(cycles), 1) if cycles else None
+
+    result = {
+        "period": {"start": start, "end": today, "months": months},
+        "events": events,
+        "flow_dates": flow_dates,
+        "cycles_detected": len(cycles),
+        "cycle_lengths": cycles,
+        "avg_cycle_length": avg_cycle_length,
+    }
+
+    if avg_cycle_length and flow_dates:
+        # Predict next period
+        last_period_start = None
+        prev_date = None
+        for d in flow_dates:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            if prev_date is None or (dt - prev_date).days > 3:
+                last_period_start = d
+            prev_date = dt
+        if last_period_start:
+            result["last_period_start"] = last_period_start
+            next_dt = datetime.strptime(last_period_start, "%Y-%m-%d") + timedelta(days=round(avg_cycle_length))
+            result["predicted_next_period"] = next_dt.strftime("%Y-%m-%d")
+
+    return result
+
+
 # --- ASGI app composition ---
 
 _metrics_app = make_asgi_app()
+
+
+# --- Health Auto Export webhook ---
+
+
+async def _handle_health_import(request: Request) -> Response:
+    """Handle POST /api/health-import from Health Auto Export app."""
+    # Auth check
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer ") or auth[7:] != config.AUTH_TOKEN:
+        return Response("Unauthorized", status_code=401)
+
+    start_time = time.monotonic()
+    try:
+        body = await request.body()
+        payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return Response('{"error": "invalid JSON"}', status_code=400, media_type="application/json")
+
+    conn = _get_conn()
+    data = payload.get("data", payload)
+    imported = {"weight": 0, "activities": 0, "cycle_events": 0}
+
+    # Process metrics (weight, etc.)
+    for metric in data.get("metrics", []):
+        metric_name = metric.get("name", "").lower()
+        if metric_name in ("weight", "body_mass", "weight_body_mass"):
+            for entry in metric.get("data", []):
+                qty = entry.get("qty")
+                if qty is None:
+                    continue
+                date_str = _parse_date(entry.get("date", ""))
+                if date_str:
+                    # Convert lbs to kg if needed
+                    units = metric.get("units", "").lower()
+                    weight_kg = qty * 0.453592 if "lb" in units else qty
+                    db.upsert_weight(conn, round(weight_kg, 2), date_str)
+                    WEIGHT_ENTRIES.inc()
+                    imported["weight"] += 1
+
+    # Process workouts
+    for workout in data.get("workouts", []):
+        activity_type = workout.get("name", "Unknown")
+        start_at = workout.get("start", "")
+        end_at = workout.get("end")
+        duration = workout.get("duration")  # seconds
+        duration_min = round(duration / 60, 1) if duration else None
+        kcal = workout.get("activeEnergy", {}).get("qty") if isinstance(workout.get("activeEnergy"), dict) else workout.get("activeEnergy")
+        distance = workout.get("distance", {}).get("qty") if isinstance(workout.get("distance"), dict) else workout.get("distance")
+        hr = workout.get("heartRate", {}).get("avg") if isinstance(workout.get("heartRate"), dict) else None
+
+        if start_at:
+            db.upsert_activity(
+                conn,
+                activity_type=activity_type,
+                start_at=start_at,
+                end_at=end_at,
+                duration_min=duration_min,
+                kcal_burned=kcal,
+                distance_m=distance,
+                avg_heart_rate=hr,
+                source="health_auto_export",
+            )
+            ACTIVITIES_LOGGED.inc()
+            HEALTH_IMPORTS.labels(data_type="activity").inc()
+            imported["activities"] += 1
+
+    # Process cycle tracking
+    for event in data.get("cycleTracking", []):
+        event_type = event.get("name", event.get("type", "unknown")).lower().replace(" ", "_")
+        value = event.get("value", event.get("qty"))
+        if isinstance(value, (int, float)):
+            value = str(value)
+        date_str = _parse_date(event.get("date", ""))
+        if date_str:
+            db.upsert_cycle_event(
+                conn,
+                event_type=event_type,
+                date=date_str,
+                value=value,
+                source="health_auto_export",
+            )
+            CYCLE_EVENTS_LOGGED.inc()
+            HEALTH_IMPORTS.labels(data_type="cycle").inc()
+            imported["cycle_events"] += 1
+
+    HEALTH_IMPORT_LATENCY.observe(time.monotonic() - start_time)
+    _log.info("Health data imported", extra={"imported": imported})
+
+    return Response(
+        json.dumps({"status": "ok", "imported": imported}),
+        status_code=200,
+        media_type="application/json",
+    )
+
+
+def _parse_date(date_str: str) -> str | None:
+    """Extract YYYY-MM-DD from an ISO datetime string."""
+    if not date_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        return dt.astimezone(ZoneInfo(config.TZ)).strftime("%Y-%m-%d")
+    except ValueError:
+        # Try plain date
+        if len(date_str) >= 10:
+            return date_str[:10]
+        return None
 
 
 class BearerAuthMiddleware:
@@ -769,7 +1032,7 @@ class BearerAuthMiddleware:
 
 
 class AppRouter:
-    """Unified ASGI router: /metrics (no auth), /login (OAuth), everything else to MCP."""
+    """Unified ASGI router: /metrics (no auth), /api/health-import, /login (OAuth), everything else to MCP."""
 
     def __init__(self, mcp_app, login_router=None):
         self.mcp_app = mcp_app
@@ -780,6 +1043,15 @@ class AppRouter:
             path = scope.get("path", "")
             if path == "/metrics":
                 await _metrics_app(scope, receive, send)
+                return
+            if path == "/api/health-import":
+                request = Request(scope, receive)
+                if request.method != "POST":
+                    response = Response("Method Not Allowed", status_code=405)
+                    await response(scope, receive, send)
+                    return
+                response = await _handle_health_import(request)
+                await response(scope, receive, send)
                 return
             if path == "/login" and self.login_router:
                 await self.login_router(scope, receive, send)

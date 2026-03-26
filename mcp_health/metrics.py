@@ -47,6 +47,17 @@ DB_LATENCY = Histogram(
 MEALS_LOGGED = Counter("meals_logged_total", "Total meals logged")
 PRODUCTS_CREATED = Counter("products_created_total", "Total products created")
 WEIGHT_ENTRIES = Counter("weight_entries_total", "Total weight entries logged")
+ACTIVITIES_LOGGED = Counter("activities_logged_total", "Total activity entries logged")
+CYCLE_EVENTS_LOGGED = Counter("cycle_events_logged_total", "Total cycle events logged")
+HEALTH_IMPORTS = Counter(
+    "health_import_total",
+    "Total health data imports from external sources",
+    ["data_type"],
+)
+HEALTH_IMPORT_LATENCY = Histogram(
+    "health_import_latency_seconds",
+    "Health data import duration",
+)
 
 # --- App info ---
 

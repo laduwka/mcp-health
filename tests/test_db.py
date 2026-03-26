@@ -3,7 +3,11 @@ import sqlite3
 import pytest
 from mcp_health.db import (
     delete_meal,
+    get_activities,
+    get_activity_summary,
     get_current_goals,
+    get_cycle_events,
+    get_cycle_flow_dates,
     get_daily_totals,
     get_date_range_totals,
     get_meal,
@@ -22,6 +26,8 @@ from mcp_health.db import (
     insert_product,
     search_products,
     update_product_serving,
+    upsert_activity,
+    upsert_cycle_event,
     upsert_weight,
 )
 
@@ -510,3 +516,104 @@ class TestRecentMealsByType:
             limit=5,
         )
         assert len(meals) == 2
+
+
+class TestActivity:
+    def test_insert_and_get(self, conn):
+        entry_id = upsert_activity(
+            conn,
+            activity_type="Running",
+            start_at="2026-03-20T08:00:00+00:00",
+            end_at="2026-03-20T08:45:00+00:00",
+            duration_min=45,
+            kcal_burned=350,
+            distance_m=5000,
+            avg_heart_rate=145,
+        )
+        assert entry_id is not None
+        activities = get_activities(conn, "2026-03-20", "2026-03-20")
+        assert len(activities) == 1
+        assert activities[0]["activity_type"] == "Running"
+        assert activities[0]["kcal_burned"] == 350
+
+    def test_upsert_deduplicates(self, conn):
+        upsert_activity(
+            conn,
+            activity_type="Running",
+            start_at="2026-03-20T08:00:00+00:00",
+            duration_min=45,
+            kcal_burned=350,
+        )
+        # Same type + start_at + source → should update
+        upsert_activity(
+            conn,
+            activity_type="Running",
+            start_at="2026-03-20T08:00:00+00:00",
+            duration_min=50,
+            kcal_burned=400,
+        )
+        activities = get_activities(conn, "2026-03-20", "2026-03-20")
+        assert len(activities) == 1
+        assert activities[0]["kcal_burned"] == 400
+        assert activities[0]["duration_min"] == 50
+
+    def test_summary(self, conn):
+        upsert_activity(
+            conn,
+            activity_type="Running",
+            start_at="2026-03-20T08:00:00+00:00",
+            duration_min=45,
+            kcal_burned=350,
+            distance_m=5000,
+        )
+        upsert_activity(
+            conn,
+            activity_type="Walking",
+            start_at="2026-03-20T18:00:00+00:00",
+            duration_min=30,
+            kcal_burned=150,
+            distance_m=2000,
+        )
+        summary = get_activity_summary(conn, "2026-03-20")
+        assert summary["count"] == 2
+        assert summary["total_duration_min"] == 75
+        assert summary["total_kcal_burned"] == 500
+        assert summary["total_distance_m"] == 7000
+
+    def test_empty_summary(self, conn):
+        summary = get_activity_summary(conn, "2026-03-20")
+        assert summary["count"] == 0
+        assert summary["total_kcal_burned"] == 0
+
+
+class TestCycle:
+    def test_insert_and_get(self, conn):
+        entry_id = upsert_cycle_event(
+            conn, event_type="flow", date="2026-03-01", value="medium"
+        )
+        assert entry_id is not None
+        events = get_cycle_events(conn, "2026-03-01", "2026-03-31")
+        assert len(events) == 1
+        assert events[0]["event_type"] == "flow"
+        assert events[0]["value"] == "medium"
+
+    def test_upsert_deduplicates(self, conn):
+        upsert_cycle_event(conn, event_type="flow", date="2026-03-01", value="light")
+        upsert_cycle_event(conn, event_type="flow", date="2026-03-01", value="heavy")
+        events = get_cycle_events(conn, "2026-03-01", "2026-03-01")
+        assert len(events) == 1
+        assert events[0]["value"] == "heavy"
+
+    def test_flow_dates(self, conn):
+        for day in [1, 2, 3, 4, 29, 30, 31]:
+            upsert_cycle_event(conn, event_type="flow", date=f"2026-03-{day:02d}", value="medium")
+        dates = get_cycle_flow_dates(conn, months=1)
+        assert len(dates) == 7
+        assert dates[0] == "2026-03-01"
+
+    def test_multiple_event_types(self, conn):
+        upsert_cycle_event(conn, event_type="flow", date="2026-03-01", value="heavy")
+        upsert_cycle_event(conn, event_type="cervical_mucus", date="2026-03-10", value="egg_white")
+        upsert_cycle_event(conn, event_type="basal_temp", date="2026-03-10", value="36.6")
+        events = get_cycle_events(conn, "2026-03-01", "2026-03-31")
+        assert len(events) == 3

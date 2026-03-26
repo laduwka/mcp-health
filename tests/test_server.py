@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from unittest.mock import patch
 
@@ -10,7 +11,7 @@ from mcp_health import db, server
 @pytest.fixture(autouse=True)
 def setup_db(monkeypatch):
     """Use in-memory DB for all server tests."""
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     db.init_db(conn)
@@ -517,3 +518,188 @@ class TestLegacyBearerAuth:
         # Should not be 401 — it may be 405 or other depending on endpoint,
         # but auth passed
         assert resp.status_code != 401
+
+
+class TestLogActivity:
+    def test_log_activity(self):
+        result = server.log_activity(
+            activity_type="Running",
+            start_at="2026-03-20T08:00:00+00:00",
+            duration_min=45,
+            kcal_burned=350,
+            distance_m=5000,
+        )
+        assert result["status"] == "logged"
+        assert result["activity_type"] == "Running"
+
+    def test_activity_in_daily_summary(self):
+        server.log_activity(
+            activity_type="Running",
+            start_at="2026-03-20T08:00:00+00:00",
+            duration_min=45,
+            kcal_burned=350,
+        )
+        summary = server.get_daily_summary(date="2026-03-20")
+        assert "activity" in summary
+        assert summary["activity"]["count"] == 1
+        assert summary["activity"]["total_kcal_burned"] == 350
+
+    def test_activity_summary(self):
+        server.log_activity(
+            activity_type="Running",
+            start_at="2026-03-20T08:00:00+00:00",
+            duration_min=45,
+            kcal_burned=350,
+        )
+        server.log_activity(
+            activity_type="Walking",
+            start_at="2026-03-20T18:00:00+00:00",
+            duration_min=30,
+            kcal_burned=150,
+        )
+        result = server.get_activity_summary(date="2026-03-20")
+        assert result["summary"]["count"] == 2
+        assert len(result["activities"]) == 2
+
+
+class TestCycleTracking:
+    def test_log_cycle_event(self):
+        result = server.log_cycle_event(
+            event_type="flow", date="2026-03-01", value="medium"
+        )
+        assert result["status"] == "logged"
+        assert result["event_type"] == "flow"
+
+    def test_cycle_summary_with_prediction(self):
+        # Two cycles: March 1-4 and March 29-April 1
+        for day in [1, 2, 3, 4]:
+            server.log_cycle_event(event_type="flow", date=f"2026-03-{day:02d}", value="medium")
+        for day in [29, 30, 31]:
+            server.log_cycle_event(event_type="flow", date=f"2026-03-{day:02d}", value="medium")
+        server.log_cycle_event(event_type="flow", date="2026-04-01", value="light")
+
+        result = server.get_cycle_summary(months=3)
+        assert result["cycles_detected"] >= 1
+        assert result["avg_cycle_length"] is not None
+        assert "predicted_next_period" in result
+
+    def test_cycle_in_weekly_report(self):
+        server.log_cycle_event(event_type="flow", date="2026-03-17", value="medium")
+        report = server.get_weekly_report(week_start="2026-03-16")
+        assert "cycle_events" in report
+        assert len(report["cycle_events"]) == 1
+
+
+class TestHealthImportEndpoint:
+    def _post_import(self, payload, token=None):
+        client = TestClient(server.app, raise_server_exceptions=False)
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return client.post("/api/health-import", content=json.dumps(payload), headers=headers)
+
+    def test_no_auth_returns_401(self):
+        resp = self._post_import({"data": {}})
+        assert resp.status_code == 401
+
+    def test_wrong_auth_returns_401(self):
+        resp = self._post_import({"data": {}}, token="wrong")
+        assert resp.status_code == 401
+
+    def test_invalid_json(self):
+        client = TestClient(server.app, raise_server_exceptions=False)
+        resp = client.post(
+            "/api/health-import",
+            content="not json",
+            headers={
+                "Authorization": f"Bearer {server.config.AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_import_weight(self):
+        payload = {
+            "data": {
+                "metrics": [
+                    {
+                        "name": "weight_body_mass",
+                        "units": "kg",
+                        "data": [
+                            {"date": "2026-03-20T08:00:00+00:00", "qty": 72.5},
+                        ],
+                    }
+                ]
+            }
+        }
+        resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"]["weight"] == 1
+
+        # Verify in DB
+        conn = server._get_conn()
+        w = db.get_weight_for_date(conn, "2026-03-20")
+        assert w is not None
+        assert w["weight_kg"] == 72.5
+
+    def test_import_workouts(self):
+        payload = {
+            "data": {
+                "workouts": [
+                    {
+                        "name": "Running",
+                        "start": "2026-03-20T08:00:00+00:00",
+                        "end": "2026-03-20T08:45:00+00:00",
+                        "duration": 2700,
+                        "activeEnergy": {"qty": 350, "units": "kcal"},
+                        "distance": {"qty": 5000, "units": "m"},
+                        "heartRate": {"avg": 145, "min": 120, "max": 170},
+                    }
+                ]
+            }
+        }
+        resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"]["activities"] == 1
+
+    def test_import_cycle_tracking(self):
+        payload = {
+            "data": {
+                "cycleTracking": [
+                    {"name": "Menstrual Flow", "date": "2026-03-01T00:00:00+00:00", "value": "medium"},
+                    {"name": "Cervical Mucus", "date": "2026-03-10T00:00:00+00:00", "value": "egg_white"},
+                ]
+            }
+        }
+        resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["imported"]["cycle_events"] == 2
+
+    def test_method_not_allowed(self):
+        client = TestClient(server.app, raise_server_exceptions=False)
+        resp = client.get("/api/health-import")
+        assert resp.status_code == 405
+
+    def test_import_weight_lbs(self):
+        payload = {
+            "data": {
+                "metrics": [
+                    {
+                        "name": "body_mass",
+                        "units": "lb",
+                        "data": [
+                            {"date": "2026-03-20T08:00:00+00:00", "qty": 160},
+                        ],
+                    }
+                ]
+            }
+        }
+        resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
+        assert resp.status_code == 200
+        conn = server._get_conn()
+        w = db.get_weight_for_date(conn, "2026-03-20")
+        assert w is not None
+        assert 72 < w["weight_kg"] < 73  # ~72.57 kg
