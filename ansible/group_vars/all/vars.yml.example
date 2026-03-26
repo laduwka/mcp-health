@@ -8,5 +8,5 @@ ghcr_image: "ghcr.io/YOUR_USERNAME/mcp-health"
 backup_retain_days: 30
 oauth_issuer: "https://your-domain.com"
 datasette_port: 8001
-loki_version: "3.6.8"
+loki_version: "3.7.0"
 loki_retention_days: 30

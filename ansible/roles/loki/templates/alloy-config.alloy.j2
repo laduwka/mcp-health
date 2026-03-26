@@ -1,0 +1,20 @@
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.docker.containers.targets
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.source.journal "systemd" {
+  forward_to = [loki.write.local.receiver]
+  labels     = { job = "systemd" }
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:3100/loki/api/v1/push"
+  }
+}

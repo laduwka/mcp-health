@@ -5,8 +5,8 @@
     state: restarted
     daemon_reload: true
 
-- name: restart promtail
+- name: restart alloy
   systemd:
-    name: promtail
+    name: alloy
     state: restarted
     daemon_reload: true
