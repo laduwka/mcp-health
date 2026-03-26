@@ -961,6 +961,17 @@ async def _handle_health_import(request: Request) -> Response:
     data = payload.get("data", payload)
     imported = {"weight": 0, "activities": 0, "cycle_events": 0}
 
+    # Debug: log what sections are present and their sizes
+    sections = {
+        k: len(v) if isinstance(v, list) else type(v).__name__
+        for k, v in data.items()
+        if v and (not isinstance(v, list) or len(v) > 0)
+    }
+    _log.info(
+        "Health import payload sections",
+        extra={"imported": sections, "automation_id": automation_id},
+    )
+
     # Process metrics (weight, etc.)
     for metric in data.get("metrics", []):
         metric_name = metric.get("name", "").lower().replace(" ", "_")
