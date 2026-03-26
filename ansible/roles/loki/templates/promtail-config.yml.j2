@@ -18,3 +18,12 @@ scrape_configs:
           __path__: /var/lib/docker/containers/*/*-json.log
     pipeline_stages:
       - docker: {}
+
+  - job_name: journal
+    journal:
+      max_age: 12h
+      labels:
+        job: systemd
+    relabel_configs:
+      - source_labels: [__journal__systemd_unit]
+        target_label: unit

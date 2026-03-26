@@ -12,7 +12,7 @@
     system: true
     shell: /usr/sbin/nologin
     create_home: false
-    groups: docker
+    groups: docker,systemd-journal,adm
     append: true
 
 - name: Create Loki directories
