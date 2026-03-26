@@ -679,16 +679,15 @@ class TestHealthImportEndpoint:
             "data": {
                 "cycleTracking": [
                     {
-                        "start": "2026-03-01T00:00:00+00:00",
-                        "name": "Menstruation",
-                        "menstrualFlow": "Heavy",
-                        "cervicalMucus": "Dry",
+                        "start": "2026-03-01 12:00:00 -0400",
+                        "name": "Menstrual Flow",
+                        "value": "Heavy",
+                        "isCycleStart": True,
                     },
                     {
                         "start": "2026-03-10T00:00:00+00:00",
-                        "name": "Ovulation",
-                        "ovulationTestResult": "Positive",
-                        "basalBodyTemperature": {"qty": 37.2, "units": "C"},
+                        "name": "Ovulation Test Result",
+                        "value": "Positive",
                     },
                 ]
             }
@@ -696,8 +695,7 @@ class TestHealthImportEndpoint:
         resp = self._post_import(payload, token=server.config.AUTH_TOKEN)
         assert resp.status_code == 200
         body = resp.json()
-        # First event: flow + cervical_mucus = 2, second: ovulation_test + basal_temp = 2
-        assert body["imported"]["cycle_events"] == 4
+        assert body["imported"]["cycle_events"] == 2
 
     def test_method_not_allowed(self):
         client = TestClient(server.app, raise_server_exceptions=False)
@@ -743,14 +741,16 @@ class TestHealthImportEndpoint:
         assert resp.status_code == 200
         assert resp.json()["imported"]["activities"] == 1
 
-    def test_import_cycle_boolean_field(self):
-        """sexualActivity is a boolean in HAE."""
+    def test_import_cycle_with_cycle_start(self):
+        """isCycleStart should be stored in notes."""
         payload = {
             "data": {
                 "cycleTracking": [
                     {
                         "start": "2026-03-15T00:00:00+00:00",
-                        "sexualActivity": True,
+                        "name": "Menstrual Flow",
+                        "value": "Unspecified",
+                        "isCycleStart": True,
                     },
                 ]
             }

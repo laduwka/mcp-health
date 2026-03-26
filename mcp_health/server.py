@@ -1024,46 +1024,40 @@ async def _handle_health_import(request: Request) -> Response:
             imported["activities"] += 1
 
     # Process cycle tracking
-    _CYCLE_FIELD_MAP = {
-        "menstrualFlow": "flow",
-        "cervicalMucus": "cervical_mucus",
-        "ovulationTestResult": "ovulation_test",
-        "basalBodyTemperature": "basal_temp",
-        "sexualActivity": "sexual_activity",
+    # HAE sends individual events with name/value:
+    # {"name": "Menstrual Flow", "value": "Unspecified", "start": "...", "isCycleStart": true}
+    _CYCLE_NAME_MAP = {
+        "menstrual flow": "flow",
+        "cervical mucus quality": "cervical_mucus",
+        "ovulation test result": "ovulation_test",
+        "basal body temperature": "basal_temp",
+        "sexual activity": "sexual_activity",
+        "spotting": "spotting",
+        "intermenstrual bleeding": "spotting",
     }
-    cycle_events_raw = data.get("cycleTracking", [])
-    if cycle_events_raw:
-        _log.info(
-            "Cycle tracking raw sample",
-            extra={"imported": cycle_events_raw[0] if cycle_events_raw else {}},
-        )
-    for event in cycle_events_raw:
+    for event in data.get("cycleTracking", []):
         date_str = _parse_date(event.get("start") or event.get("date", ""))
         if not date_str:
-            _log.warning(
-                "Cycle event skipped: no parseable date", extra={"imported": event}
-            )
             continue
-        for hae_field, event_type in _CYCLE_FIELD_MAP.items():
-            raw = event.get(hae_field)
-            if raw is None:
-                continue
-            if isinstance(raw, dict):
-                value = str(raw.get("qty", ""))
-            elif isinstance(raw, bool):
-                value = "yes" if raw else "no"
-            else:
-                value = str(raw)
-            db.upsert_cycle_event(
-                conn,
-                event_type=event_type,
-                date=date_str,
-                value=value,
-                source="health_auto_export",
-            )
-            CYCLE_EVENTS_LOGGED.inc()
-            HEALTH_IMPORTS.labels(data_type="cycle").inc()
-            imported["cycle_events"] += 1
+        raw_name = event.get("name", "").lower().strip()
+        event_type = _CYCLE_NAME_MAP.get(raw_name, raw_name.replace(" ", "_"))
+        value = event.get("value")
+        if isinstance(value, (int, float)):
+            value = str(value)
+        elif isinstance(value, dict):
+            value = str(value.get("qty", ""))
+        notes = "cycle_start" if event.get("isCycleStart") else None
+        db.upsert_cycle_event(
+            conn,
+            event_type=event_type,
+            date=date_str,
+            value=value,
+            notes=notes,
+            source="health_auto_export",
+        )
+        CYCLE_EVENTS_LOGGED.inc()
+        HEALTH_IMPORTS.labels(data_type="cycle").inc()
+        imported["cycle_events"] += 1
 
     HEALTH_IMPORT_LATENCY.observe(time.monotonic() - start_time)
     _log.info(
