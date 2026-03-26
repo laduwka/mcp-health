@@ -37,6 +37,7 @@ COL_KCAL = "energy-kcal_100g"
 COL_PROTEIN = "proteins_100g"
 COL_FAT = "fat_100g"
 COL_CARBS = "carbohydrates_100g"
+COL_COUNTRIES = "countries_tags"
 
 REQUIRED_COLS = {COL_CODE, COL_NAME, COL_KCAL, COL_PROTEIN, COL_FAT, COL_CARBS}
 
@@ -48,7 +49,8 @@ CREATE TABLE products (
     kcal_per_100 REAL NOT NULL,
     protein_per_100 REAL NOT NULL,
     fat_per_100 REAL NOT NULL,
-    carbs_per_100 REAL NOT NULL
+    carbs_per_100 REAL NOT NULL,
+    countries_tags TEXT
 );
 
 CREATE VIRTUAL TABLE products_fts USING fts5(
@@ -129,12 +131,13 @@ def full_import(output_path: str, csv_path: str | None = None):
                 fat = _safe_float(row.get(COL_FAT)) or 0.0
                 carbs = _safe_float(row.get(COL_CARBS)) or 0.0
                 brands = (row.get(COL_BRANDS) or "").strip() or None
+                countries = (row.get(COL_COUNTRIES) or "").strip() or None
 
-                batch.append((code, name, brands, kcal, protein, fat, carbs))
+                batch.append((code, name, brands, kcal, protein, fat, carbs, countries))
 
                 if len(batch) >= BATCH_SIZE:
                     conn.executemany(
-                        "INSERT OR IGNORE INTO products VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT OR IGNORE INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         batch,
                     )
                     conn.commit()
@@ -153,7 +156,7 @@ def full_import(output_path: str, csv_path: str | None = None):
             # Final batch
             if batch:
                 conn.executemany(
-                    "INSERT OR IGNORE INTO products VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     batch,
                 )
                 conn.commit()
@@ -271,8 +274,12 @@ def delta_update(output_path: str):
                 fat = _safe_float(str(n.get("fat_100g", ""))) or 0.0
                 carbs = _safe_float(str(n.get("carbohydrates_100g", ""))) or 0.0
                 brands = (doc.get("brands") or "").strip() or None
+                countries = doc.get("countries_tags") or ""
+                if isinstance(countries, list):
+                    countries = ",".join(countries)
+                countries = countries.strip() or None
 
-                batch.append((code, name, brands, kcal, protein, fat, carbs))
+                batch.append((code, name, brands, kcal, protein, fat, carbs, countries))
 
                 if len(batch) >= BATCH_SIZE:
                     _upsert_batch(conn, batch)
@@ -303,8 +310,8 @@ def delta_update(output_path: str):
 def _upsert_batch(conn: sqlite3.Connection, batch: list[tuple]):
     conn.executemany(
         "INSERT OR REPLACE INTO products "
-        "(code, product_name, brands, kcal_per_100, protein_per_100, fat_per_100, carbs_per_100) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(code, product_name, brands, kcal_per_100, protein_per_100, fat_per_100, carbs_per_100, countries_tags) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         batch,
     )
     conn.commit()

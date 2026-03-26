@@ -141,6 +141,17 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
 
+    # Migration: add serving size columns to products
+    try:
+        conn.execute("ALTER TABLE products ADD COLUMN default_serving_grams REAL")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE products ADD COLUMN serving_label TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    conn.commit()
+
 
 # --- Products ---
 
@@ -163,7 +174,7 @@ def insert_product(conn: sqlite3.Connection, **kwargs) -> int:
 def search_products(conn: sqlite3.Connection, query: str, limit: int = 5) -> list[dict]:
     rows = conn.execute(
         """SELECT id, name, kcal_per_100, protein_per_100, fat_per_100, carbs_per_100,
-                  barcode, usage_count, last_used
+                  barcode, usage_count, last_used, default_serving_grams, serving_label
            FROM products
            WHERE name_lower LIKE '%' || ? || '%'
            ORDER BY usage_count DESC, last_used DESC
@@ -191,6 +202,41 @@ def increment_product_usage(conn: sqlite3.Connection, product_id: int) -> None:
         (_now_utc(), product_id),
     )
     conn.commit()
+
+
+def update_product_serving(
+    conn: sqlite3.Connection,
+    product_id: int,
+    grams: float,
+    label: str | None = None,
+) -> None:
+    conn.execute(
+        "UPDATE products SET default_serving_grams = ?, serving_label = ? WHERE id = ?",
+        (grams, label, product_id),
+    )
+    conn.commit()
+
+
+def get_most_common_serving(conn: sqlite3.Connection, product_id: int) -> dict | None:
+    """Return the most common weight_grams for a product and its frequency ratio."""
+    rows = conn.execute(
+        """SELECT weight_grams, COUNT(*) as cnt
+           FROM meal_items
+           WHERE product_id = ?
+           GROUP BY weight_grams
+           ORDER BY cnt DESC""",
+        (product_id,),
+    ).fetchall()
+    if not rows:
+        return None
+    total = sum(r["cnt"] for r in rows)
+    top = rows[0]
+    return {
+        "weight_grams": top["weight_grams"],
+        "count": top["cnt"],
+        "total": total,
+        "ratio": top["cnt"] / total,
+    }
 
 
 # --- Meals ---
@@ -256,6 +302,84 @@ def delete_meal(conn: sqlite3.Connection, meal_id: int) -> bool:
     cur = conn.execute("DELETE FROM meals WHERE id = ?", (meal_id,))
     conn.commit()
     return cur.rowcount > 0
+
+
+def get_meal_item(conn: sqlite3.Connection, item_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM meal_items WHERE id = ?", (item_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_meal_item(conn: sqlite3.Connection, item_id: int) -> bool:
+    cur = conn.execute("DELETE FROM meal_items WHERE id = ?", (item_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def count_meal_items(conn: sqlite3.Connection, meal_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM meal_items WHERE meal_id = ?", (meal_id,)
+    ).fetchone()
+    return row["cnt"]
+
+
+def update_meal_item(
+    conn: sqlite3.Connection,
+    item_id: int,
+    weight_grams: float,
+    kcal: float,
+    protein: float,
+    fat: float,
+    carbs: float,
+) -> None:
+    conn.execute(
+        """UPDATE meal_items
+           SET weight_grams = ?, kcal = ?, protein = ?, fat = ?, carbs = ?
+           WHERE id = ?""",
+        (weight_grams, kcal, protein, fat, carbs, item_id),
+    )
+    conn.commit()
+
+
+@timed_db
+def get_recent_meals_by_type(
+    conn: sqlite3.Connection,
+    meal_type: str | None,
+    start_utc: str,
+    end_utc: str,
+    limit: int = 5,
+) -> list[dict]:
+    """Return recent meals (with items) optionally filtered by meal_type."""
+    if meal_type:
+        meals = conn.execute(
+            """SELECT * FROM meals
+               WHERE meal_type = ? AND logged_at >= ? AND logged_at < ?
+               ORDER BY logged_at DESC LIMIT ?""",
+            (meal_type, start_utc, end_utc, limit),
+        ).fetchall()
+    else:
+        meals = conn.execute(
+            """SELECT * FROM meals
+               WHERE logged_at >= ? AND logged_at < ?
+               ORDER BY logged_at DESC LIMIT ?""",
+            (start_utc, end_utc, limit),
+        ).fetchall()
+
+    result = []
+    for meal in meals:
+        meal_dict = dict(meal)
+        items = conn.execute(
+            """SELECT mi.id, mi.product_id, mi.name, mi.weight_grams,
+                      mi.kcal, mi.protein, mi.fat, mi.carbs,
+                      p.default_serving_grams, p.serving_label
+               FROM meal_items mi
+               LEFT JOIN products p ON mi.product_id = p.id
+               WHERE mi.meal_id = ?
+               ORDER BY mi.id""",
+            (meal_dict["id"],),
+        ).fetchall()
+        meal_dict["items"] = [dict(i) for i in items]
+        result.append(meal_dict)
+    return result
 
 
 # --- Weight ---

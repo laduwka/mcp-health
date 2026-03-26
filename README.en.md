@@ -6,9 +6,10 @@ MCP server for nutrition and weight tracking. Works as an HTTP endpoint with OAu
 
 ## Features
 
-- **Products** — product database with calories/protein/fat/carbs per 100g, name search, barcodes
-- **OpenFoodFacts** — local database of ~2M products (SQLite + FTS5), instant search and barcode lookup without external APIs
+- **Products** — product database with calories/protein/fat/carbs per 100g, name search, barcodes, default serving sizes
+- **OpenFoodFacts** — local database of ~2M products (SQLite + FTS5), instant search and barcode lookup without external APIs, country filtering
 - **Meals** — logging with portion calculation, ad-hoc products with auto-save
+- **Quick logging** — repeat meals without clarification questions: meal history, auto-learned serving sizes
 - **Weight** — tracking with trends (week/month)
 - **Goals** — daily calorie/macro targets, remaining intake
 - **Reports** — daily summary, weekly report with adherence, trends over any period
@@ -18,16 +19,20 @@ MCP server for nutrition and weight tracking. Works as an HTTP endpoint with OAu
 | Tool | Description |
 |------|-------------|
 | `add_product` | Add a product to the database (calories, macros, barcode, notes) |
-| `search_product` | Search by name (local + OpenFoodFacts), sorted by usage frequency |
+| `search_product` | Search by name (local + country-filtered OpenFoodFacts), sorted by usage, with serving sizes |
 | `lookup_product` | Look up product by barcode (local DB → OpenFoodFacts → cache) |
-| `log_meal` | Log a meal (by product_id or ad-hoc) |
+| `log_meal` | Log a meal (by product_id or ad-hoc), auto-learns serving sizes |
+| `get_recent_meals` | Recent meals with full item data — for re-logging without search |
+| `set_product_serving` | Set default serving size (e.g. 39g = 1 protein scoop) |
 | `log_weight` | Log weight, get trend |
 | `get_daily_summary` | Daily summary: meals, totals, remaining vs goals |
 | `get_weekly_report` | Weekly report: averages, adherence, top products |
 | `get_trends` | Nutrition and weight trends over N days |
-| `get_top_products` | Top products over N days (for shopping lists, habit analysis) |
+| `get_top_products` | Top products with product_id, macros, and serving sizes — call before search for routine meals |
 | `update_goals` | Set/update daily calorie and macro goals |
 | `delete_meal` | Delete a logged meal |
+| `delete_meal_item` | Delete a single item from a meal (deletes meal if last item) |
+| `update_meal_item` | Update item weight with automatic macro recalculation |
 
 ## Quick Start
 
@@ -99,6 +104,7 @@ Claude Desktop supports OAuth — connection is the same as web. You can also us
 | `AUTH_TOKEN` | `changeme` | Password for OAuth authorization (also used as Bearer token in legacy mode) |
 | `DB_PATH` | `data/fitness.db` | Path to user data SQLite database |
 | `OFF_DB_PATH` | `data/off_products.db` | Path to OpenFoodFacts SQLite database (read-only) |
+| `OFF_COUNTRY` | _(empty)_ | Country filter for OFF search (e.g. `en:canada`). If not set — no filtering |
 | `TZ` | `America/Toronto` | Timezone |
 | `OAUTH_ISSUER` | _(empty)_ | OAuth server URL (e.g. `https://your-domain.com`). If not set — falls back to legacy Bearer auth |
 | `LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
