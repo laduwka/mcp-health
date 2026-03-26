@@ -1031,9 +1031,18 @@ async def _handle_health_import(request: Request) -> Response:
         "basalBodyTemperature": "basal_temp",
         "sexualActivity": "sexual_activity",
     }
-    for event in data.get("cycleTracking", []):
+    cycle_events_raw = data.get("cycleTracking", [])
+    if cycle_events_raw:
+        _log.info(
+            "Cycle tracking raw sample",
+            extra={"imported": cycle_events_raw[0] if cycle_events_raw else {}},
+        )
+    for event in cycle_events_raw:
         date_str = _parse_date(event.get("start") or event.get("date", ""))
         if not date_str:
+            _log.warning(
+                "Cycle event skipped: no parseable date", extra={"imported": event}
+            )
             continue
         for hae_field, event_type in _CYCLE_FIELD_MAP.items():
             raw = event.get(hae_field)
