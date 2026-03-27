@@ -80,7 +80,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
     migrations = []
     if "source" not in cols:
-        migrations.append("ALTER TABLE products ADD COLUMN source TEXT NOT NULL DEFAULT 'local'")
+        migrations.append(
+            "ALTER TABLE products ADD COLUMN source TEXT NOT NULL DEFAULT 'local'"
+        )
     if "off_code" not in cols:
         migrations.append("ALTER TABLE products ADD COLUMN off_code TEXT")
     if "brand" not in cols:
@@ -101,7 +103,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 def full_import(db_path: str, csv_path: str | None = None):
     """Import OFF CSV dump into the unified products table."""
     if not os.path.exists(db_path):
-        print(f"Database not found at {db_path}. Run the server first to create the schema.")
+        print(
+            f"Database not found at {db_path}. Run the server first to create the schema."
+        )
         sys.exit(1)
 
     conn = sqlite3.connect(db_path)
@@ -157,10 +161,19 @@ def full_import(db_path: str, csv_path: str | None = None):
             brands = (row.get(COL_BRANDS) or "").strip() or None
             countries = (row.get(COL_COUNTRIES) or "").strip() or None
 
-            batch.append((
-                name, name.lower(), brands, kcal, protein, fat, carbs,
-                code, countries,
-            ))
+            batch.append(
+                (
+                    name,
+                    name.lower(),
+                    brands,
+                    kcal,
+                    protein,
+                    fat,
+                    carbs,
+                    code,
+                    countries,
+                )
+            )
 
             if len(batch) >= BATCH_SIZE:
                 conn.executemany(UPSERT_SQL, batch)
@@ -217,11 +230,7 @@ def full_import(db_path: str, csv_path: str | None = None):
     conn.close()
 
     elapsed = time.monotonic() - start_time
-    print(
-        f"Done: {inserted:,} products imported, "
-        f"{skipped:,} skipped, "
-        f"{elapsed:.0f}s"
-    )
+    print(f"Done: {inserted:,} products imported, {skipped:,} skipped, {elapsed:.0f}s")
 
 
 def delta_update(db_path: str):
@@ -314,10 +323,19 @@ def delta_update(db_path: str):
                     countries = ",".join(countries)
                 countries = countries.strip() or None
 
-                batch.append((
-                    name, name.lower(), brands, kcal, protein, fat, carbs,
-                    code, countries,
-                ))
+                batch.append(
+                    (
+                        name,
+                        name.lower(),
+                        brands,
+                        kcal,
+                        protein,
+                        fat,
+                        carbs,
+                        code,
+                        countries,
+                    )
+                )
 
                 if len(batch) >= BATCH_SIZE:
                     conn.executemany(UPSERT_SQL, batch)
@@ -356,9 +374,7 @@ def main():
     )
     parser.add_argument(
         "--db",
-        default=os.path.join(
-            os.path.dirname(__file__), "..", "data", "fitness.db"
-        ),
+        default=os.path.join(os.path.dirname(__file__), "..", "data", "fitness.db"),
         help="Path to fitness database (default: data/fitness.db)",
     )
     parser.add_argument(

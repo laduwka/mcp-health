@@ -334,9 +334,7 @@ def get_products_batch(
 
 
 @timed_db
-def increment_usage_batch(
-    conn: sqlite3.Connection, product_ids: list[int]
-) -> None:
+def increment_usage_batch(conn: sqlite3.Connection, product_ids: list[int]) -> None:
     """Increment usage_count for multiple products in a single query."""
     if not product_ids:
         return
@@ -387,9 +385,7 @@ def get_common_servings_batch(
 
 
 @timed_db
-def resolve_product(
-    conn: sqlite3.Connection, query: str, limit: int = 5
-) -> list[dict]:
+def resolve_product(conn: sqlite3.Connection, query: str, limit: int = 5) -> list[dict]:
     """Resolve a product query to candidates.
 
     Returns candidates sorted by: usage_count DESC, source ASC (local before off), FTS rank.

@@ -145,9 +145,7 @@ def add_product(
         # Check OFF products via FTS
         off_matches = db.search_products_fts(conn, name, limit=3)
         off_matches = [p for p in off_matches if p.get("source") == "off"]
-        differing = [
-            p for p in off_matches if _nutrition_differs(normalized, p)
-        ]
+        differing = [p for p in off_matches if _nutrition_differs(normalized, p)]
         if differing:
             return {
                 "status": "off_matches_found",
@@ -263,23 +261,25 @@ def log_meal(
             resolved_items.append((item, top["id"]))
             LOG_MEAL_RESOLUTION.labels(outcome="resolved").inc()
         else:
-            ambiguous_items.append({
-                "query": item["query"],
-                "weight_grams": item["weight_grams"],
-                "candidates": [
-                    {
-                        "product_id": c["id"],
-                        "name": c["name"],
-                        "brand": c.get("brand"),
-                        "source": c.get("source", "local"),
-                        "kcal_per_100": c["kcal_per_100"],
-                        "protein_per_100": c["protein_per_100"],
-                        "fat_per_100": c["fat_per_100"],
-                        "carbs_per_100": c["carbs_per_100"],
-                    }
-                    for c in candidates[:5]
-                ],
-            })
+            ambiguous_items.append(
+                {
+                    "query": item["query"],
+                    "weight_grams": item["weight_grams"],
+                    "candidates": [
+                        {
+                            "product_id": c["id"],
+                            "name": c["name"],
+                            "brand": c.get("brand"),
+                            "source": c.get("source", "local"),
+                            "kcal_per_100": c["kcal_per_100"],
+                            "protein_per_100": c["protein_per_100"],
+                            "fat_per_100": c["fat_per_100"],
+                            "carbs_per_100": c["carbs_per_100"],
+                        }
+                        for c in candidates[:5]
+                    ],
+                }
+            )
             LOG_MEAL_RESOLUTION.labels(outcome="ambiguous").inc()
 
     LOG_MEAL_PHASE.labels(phase="resolve").observe(time.monotonic() - phase_start)
@@ -311,12 +311,14 @@ def log_meal(
             product["fat_per_100"],
             product["carbs_per_100"],
         )
-        calculated_items.append({
-            "product_id": pid,
-            "name": product["name"],
-            "weight_grams": weight,
-            **portion,
-        })
+        calculated_items.append(
+            {
+                "product_id": pid,
+                "name": product["name"],
+                "weight_grams": weight,
+                **portion,
+            }
+        )
 
     LOG_MEAL_PHASE.labels(phase="calculate").observe(time.monotonic() - phase_start)
 
@@ -333,7 +335,8 @@ def log_meal(
 
         # Batch auto-learn serving sizes
         learnable = [
-            pid for pid in product_ids
+            pid
+            for pid in product_ids
             if not products[pid].get("default_serving_grams")
             and products[pid].get("usage_count", 0) >= 2
         ]

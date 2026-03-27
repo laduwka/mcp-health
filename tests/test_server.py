@@ -114,11 +114,16 @@ class TestLogMeal:
     def test_log_rejects_adhoc_nutrition(self):
         with pytest.raises(ValueError, match="product_id.*query"):
             server.log_meal(
-                items=[{
-                    "name": "Soup",
-                    "kcal": 80, "protein": 5, "fat": 3, "carbs": 8,
-                    "weight_grams": 300,
-                }],
+                items=[
+                    {
+                        "name": "Soup",
+                        "kcal": 80,
+                        "protein": 5,
+                        "fat": 3,
+                        "carbs": 8,
+                        "weight_grams": 300,
+                    }
+                ],
             )
 
     def test_daily_totals_accumulate(self):
