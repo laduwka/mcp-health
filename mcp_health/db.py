@@ -167,15 +167,59 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
 
-    # Migration: add serving size columns to products
+    # Migrations — idempotent ALTER TABLE
+    _migrations = [
+        "ALTER TABLE products ADD COLUMN default_serving_grams REAL",
+        "ALTER TABLE products ADD COLUMN serving_label TEXT",
+        "ALTER TABLE products ADD COLUMN source TEXT NOT NULL DEFAULT 'local'",
+        "ALTER TABLE products ADD COLUMN off_code TEXT",
+        "ALTER TABLE products ADD COLUMN brand TEXT",
+        "ALTER TABLE products ADD COLUMN countries_tags TEXT",
+    ]
+    for sql in _migrations:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+    # Unique index on off_code for OFF products
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_off_code "
+        "ON products(off_code) WHERE off_code IS NOT NULL"
+    )
+
+    # FTS5 virtual table for unified product search
     try:
-        conn.execute("ALTER TABLE products ADD COLUMN default_serving_grams REAL")
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS products_fts USING fts5("
+            "name, brand, content='products', content_rowid='rowid', "
+            "tokenize='unicode61')"
+        )
     except sqlite3.OperationalError:
-        pass  # column already exists
-    try:
-        conn.execute("ALTER TABLE products ADD COLUMN serving_label TEXT")
-    except sqlite3.OperationalError:
-        pass  # column already exists
+        pass  # FTS5 may not be available in test environments
+
+    # Triggers to keep FTS in sync with products table
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS products_fts_insert
+        AFTER INSERT ON products BEGIN
+            INSERT INTO products_fts(rowid, name, brand)
+            VALUES (new.rowid, new.name, new.brand);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS products_fts_delete
+        AFTER DELETE ON products BEGIN
+            INSERT INTO products_fts(products_fts, rowid, name, brand)
+            VALUES ('delete', old.rowid, old.name, old.brand);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS products_fts_update
+        AFTER UPDATE OF name, brand ON products BEGIN
+            INSERT INTO products_fts(products_fts, rowid, name, brand)
+            VALUES ('delete', old.rowid, old.name, old.brand);
+            INSERT INTO products_fts(rowid, name, brand)
+            VALUES (new.rowid, new.name, new.brand);
+        END;
+    """)
     conn.commit()
 
 
@@ -210,11 +254,13 @@ def search_products(conn: sqlite3.Connection, query: str, limit: int = 5) -> lis
     return [dict(r) for r in rows]
 
 
+@timed_db
 def get_product(conn: sqlite3.Connection, product_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
     return dict(row) if row else None
 
 
+@timed_db
 def get_product_by_barcode(conn: sqlite3.Connection, barcode: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM products WHERE barcode = ?", (barcode,)
@@ -222,6 +268,7 @@ def get_product_by_barcode(conn: sqlite3.Connection, barcode: str) -> dict | Non
     return dict(row) if row else None
 
 
+@timed_db
 def increment_product_usage(conn: sqlite3.Connection, product_id: int) -> None:
     conn.execute(
         "UPDATE products SET usage_count = usage_count + 1, last_used = ? WHERE id = ?",
@@ -230,6 +277,7 @@ def increment_product_usage(conn: sqlite3.Connection, product_id: int) -> None:
     conn.commit()
 
 
+@timed_db
 def update_product_serving(
     conn: sqlite3.Connection,
     product_id: int,
@@ -243,6 +291,109 @@ def update_product_serving(
     conn.commit()
 
 
+@timed_db
+def search_products_fts(
+    conn: sqlite3.Connection, query: str, limit: int = 5
+) -> list[dict]:
+    """Search products using FTS5. Falls back to LIKE if FTS unavailable.
+
+    Results ordered by: usage_count DESC (local products first), then FTS rank.
+    """
+    try:
+        rows = conn.execute(
+            """SELECT p.id, p.name, p.brand, p.kcal_per_100, p.protein_per_100,
+                      p.fat_per_100, p.carbs_per_100, p.barcode, p.off_code,
+                      p.source, p.usage_count, p.last_used,
+                      p.default_serving_grams, p.serving_label
+               FROM products_fts fts
+               JOIN products p ON p.rowid = fts.rowid
+               WHERE products_fts MATCH ?
+               ORDER BY p.usage_count DESC, p.source ASC, rank
+               LIMIT ?""",
+            (query, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        # FTS not available, fall back to LIKE
+        return search_products(conn, query, limit)
+
+
+@timed_db
+def get_products_batch(
+    conn: sqlite3.Connection, product_ids: list[int]
+) -> dict[int, dict]:
+    """Fetch multiple products in a single query."""
+    if not product_ids:
+        return {}
+    placeholders = ",".join(["?"] * len(product_ids))
+    rows = conn.execute(
+        f"SELECT * FROM products WHERE id IN ({placeholders})",
+        product_ids,
+    ).fetchall()
+    return {r["id"]: dict(r) for r in rows}
+
+
+@timed_db
+def increment_usage_batch(conn: sqlite3.Connection, product_ids: list[int]) -> None:
+    """Increment usage_count for multiple products in a single query."""
+    if not product_ids:
+        return
+    now = _now_utc()
+    placeholders = ",".join(["?"] * len(product_ids))
+    conn.execute(
+        f"UPDATE products SET usage_count = usage_count + 1, last_used = ? "
+        f"WHERE id IN ({placeholders})",
+        [now] + product_ids,
+    )
+    conn.commit()
+
+
+@timed_db
+def get_common_servings_batch(
+    conn: sqlite3.Connection, product_ids: list[int]
+) -> dict[int, dict]:
+    """Get most common serving weight for multiple products in one query."""
+    if not product_ids:
+        return {}
+    placeholders = ",".join(["?"] * len(product_ids))
+    rows = conn.execute(
+        f"""SELECT product_id, weight_grams, COUNT(*) as cnt
+            FROM meal_items
+            WHERE product_id IN ({placeholders})
+            GROUP BY product_id, weight_grams
+            ORDER BY product_id, cnt DESC""",
+        product_ids,
+    ).fetchall()
+
+    # Group by product_id, keep the top weight per product
+    result: dict[int, dict] = {}
+    totals: dict[int, int] = {}
+    for r in rows:
+        pid = r["product_id"]
+        totals[pid] = totals.get(pid, 0) + r["cnt"]
+        if pid not in result:
+            result[pid] = {"weight_grams": r["weight_grams"], "count": r["cnt"]}
+
+    return {
+        pid: {
+            **info,
+            "total": totals[pid],
+            "ratio": info["count"] / totals[pid],
+        }
+        for pid, info in result.items()
+    }
+
+
+@timed_db
+def resolve_product(conn: sqlite3.Connection, query: str, limit: int = 5) -> list[dict]:
+    """Resolve a product query to candidates.
+
+    Returns candidates sorted by: usage_count DESC, source ASC (local before off), FTS rank.
+    """
+    return search_products_fts(conn, query, limit)
+
+
+@timed_db
 def get_most_common_serving(conn: sqlite3.Connection, product_id: int) -> dict | None:
     """Return the most common weight_grams for a product and its frequency ratio."""
     rows = conn.execute(
@@ -319,28 +470,33 @@ def get_meals_for_date(conn: sqlite3.Connection, date_str: str) -> list[dict]:
     return result
 
 
+@timed_db
 def get_meal(conn: sqlite3.Connection, meal_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM meals WHERE id = ?", (meal_id,)).fetchone()
     return dict(row) if row else None
 
 
+@timed_db
 def delete_meal(conn: sqlite3.Connection, meal_id: int) -> bool:
     cur = conn.execute("DELETE FROM meals WHERE id = ?", (meal_id,))
     conn.commit()
     return cur.rowcount > 0
 
 
+@timed_db
 def get_meal_item(conn: sqlite3.Connection, item_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM meal_items WHERE id = ?", (item_id,)).fetchone()
     return dict(row) if row else None
 
 
+@timed_db
 def delete_meal_item(conn: sqlite3.Connection, item_id: int) -> bool:
     cur = conn.execute("DELETE FROM meal_items WHERE id = ?", (item_id,))
     conn.commit()
     return cur.rowcount > 0
 
 
+@timed_db
 def count_meal_items(conn: sqlite3.Connection, meal_id: int) -> int:
     row = conn.execute(
         "SELECT COUNT(*) as cnt FROM meal_items WHERE meal_id = ?", (meal_id,)
@@ -348,6 +504,7 @@ def count_meal_items(conn: sqlite3.Connection, meal_id: int) -> int:
     return row["cnt"]
 
 
+@timed_db
 def update_meal_item(
     conn: sqlite3.Connection,
     item_id: int,
@@ -435,6 +592,7 @@ def get_weight_range(
     return [dict(r) for r in rows]
 
 
+@timed_db
 def get_weight_for_date(conn: sqlite3.Connection, date_str: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM weight_log WHERE date = ?", (date_str,)
@@ -445,11 +603,13 @@ def get_weight_for_date(conn: sqlite3.Connection, date_str: str) -> dict | None:
 # --- Goals ---
 
 
+@timed_db
 def get_current_goals(conn: sqlite3.Connection) -> dict | None:
     row = conn.execute("SELECT * FROM goals ORDER BY set_at DESC LIMIT 1").fetchone()
     return dict(row) if row else None
 
 
+@timed_db
 def insert_goals(conn: sqlite3.Connection, **kwargs) -> int:
     kwargs.setdefault("set_at", _now_utc())
     cols = ", ".join(kwargs.keys())

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Import OpenFoodFacts CSV dump or delta updates into local SQLite database.
+"""Import OpenFoodFacts CSV dump or delta updates into the unified products table.
 
 Full import (default):
-    python scripts/import_off.py [--output data/off_products.db] [--csv-path local.csv.gz]
+    python scripts/import_off.py --db data/fitness.db [--csv-path local.csv.gz]
 
 Delta update:
-    python scripts/import_off.py --delta [--output data/off_products.db]
+    python scripts/import_off.py --db data/fitness.db --delta
 """
 
 import argparse
@@ -16,7 +16,6 @@ import json
 import os
 import sqlite3
 import sys
-import tempfile
 import time
 import urllib.request
 
@@ -41,24 +40,20 @@ COL_COUNTRIES = "countries_tags"
 
 REQUIRED_COLS = {COL_CODE, COL_NAME, COL_KCAL, COL_PROTEIN, COL_FAT, COL_CARBS}
 
-CREATE_SCHEMA = """\
-CREATE TABLE products (
-    code TEXT PRIMARY KEY,
-    product_name TEXT NOT NULL,
-    brands TEXT,
-    kcal_per_100 REAL NOT NULL,
-    protein_per_100 REAL NOT NULL,
-    fat_per_100 REAL NOT NULL,
-    carbs_per_100 REAL NOT NULL,
-    countries_tags TEXT
-);
-
-CREATE VIRTUAL TABLE products_fts USING fts5(
-    product_name,
-    content='products',
-    content_rowid='rowid',
-    tokenize='unicode61'
-);
+UPSERT_SQL = """\
+INSERT INTO products (
+    name, name_lower, brand, kcal_per_100, protein_per_100,
+    fat_per_100, carbs_per_100, off_code, source, countries_tags, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'off', ?, datetime('now'))
+ON CONFLICT(off_code) DO UPDATE SET
+    name = excluded.name,
+    name_lower = excluded.name_lower,
+    brand = excluded.brand,
+    kcal_per_100 = excluded.kcal_per_100,
+    protein_per_100 = excluded.protein_per_100,
+    fat_per_100 = excluded.fat_per_100,
+    carbs_per_100 = excluded.carbs_per_100,
+    countries_tags = excluded.countries_tags
 """
 
 USER_AGENT = "mcp-health/1.0 (https://github.com/laduwka/mcp-health)"
@@ -79,123 +74,172 @@ def _download_stream(url: str):
     return urllib.request.urlopen(req, timeout=60)
 
 
-def _create_db(db_path: str) -> sqlite3.Connection:
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Ensure the unified products table has OFF columns and FTS."""
+    # Check if off_code column exists
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
+    migrations = []
+    if "source" not in cols:
+        migrations.append(
+            "ALTER TABLE products ADD COLUMN source TEXT NOT NULL DEFAULT 'local'"
+        )
+    if "off_code" not in cols:
+        migrations.append("ALTER TABLE products ADD COLUMN off_code TEXT")
+    if "brand" not in cols:
+        migrations.append("ALTER TABLE products ADD COLUMN brand TEXT")
+    if "countries_tags" not in cols:
+        migrations.append("ALTER TABLE products ADD COLUMN countries_tags TEXT")
+
+    for sql in migrations:
+        conn.execute(sql)
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_off_code "
+        "ON products(off_code) WHERE off_code IS NOT NULL"
+    )
+    conn.commit()
+
+
+def full_import(db_path: str, csv_path: str | None = None):
+    """Import OFF CSV dump into the unified products table."""
+    if not os.path.exists(db_path):
+        print(
+            f"Database not found at {db_path}. Run the server first to create the schema."
+        )
+        sys.exit(1)
+
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=OFF")
     conn.execute("PRAGMA cache_size=-200000")  # 200 MB cache
-    conn.executescript(CREATE_SCHEMA)
-    return conn
+    _ensure_schema(conn)
 
+    # Delete existing OFF products before full import
+    print("Deleting existing OFF products...")
+    cur = conn.execute("DELETE FROM products WHERE source = 'off'")
+    deleted = cur.rowcount
+    conn.commit()
+    print(f"  Deleted {deleted:,} existing OFF products")
 
-def full_import(output_path: str, csv_path: str | None = None):
-    """Download CSV dump and create a fresh database."""
-    # Write to a temp file, then atomically rename
-    output_dir = os.path.dirname(os.path.abspath(output_path))
-    os.makedirs(output_dir, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(suffix=".db", dir=output_dir)
-    os.close(fd)
+    # Disable FTS triggers during bulk import for performance
+    conn.execute("DROP TRIGGER IF EXISTS products_fts_insert")
+    conn.execute("DROP TRIGGER IF EXISTS products_fts_delete")
+    conn.execute("DROP TRIGGER IF EXISTS products_fts_update")
 
-    try:
-        conn = _create_db(tmp_path)
-        inserted = 0
-        skipped = 0
-        start_time = time.monotonic()
+    inserted = 0
+    skipped = 0
+    start_time = time.monotonic()
 
-        if csv_path:
-            print(f"Reading local file: {csv_path}")
-            raw_stream = open(csv_path, "rb")
-        else:
-            print(f"Downloading: {CSV_URL}")
-            raw_stream = _download_stream(CSV_URL)
+    if csv_path:
+        print(f"Reading local file: {csv_path}")
+        raw_stream = open(csv_path, "rb")
+    else:
+        print(f"Downloading: {CSV_URL}")
+        raw_stream = _download_stream(CSV_URL)
 
-        with raw_stream:
-            gz = gzip.GzipFile(fileobj=raw_stream)
-            text_stream = io.TextIOWrapper(gz, encoding="utf-8", errors="replace")
-            reader = csv.DictReader(text_stream, delimiter="\t")
+    with raw_stream:
+        gz = gzip.GzipFile(fileobj=raw_stream)
+        text_stream = io.TextIOWrapper(gz, encoding="utf-8", errors="replace")
+        reader = csv.DictReader(text_stream, delimiter="\t")
 
-            batch = []
-            for row in reader:
-                code = (row.get(COL_CODE) or "").strip()
-                name = (row.get(COL_NAME) or "").strip()
-                if not code or not name:
-                    skipped += 1
-                    continue
+        batch = []
+        for row in reader:
+            code = (row.get(COL_CODE) or "").strip()
+            name = (row.get(COL_NAME) or "").strip()
+            if not code or not name:
+                skipped += 1
+                continue
 
-                kcal = _safe_float(row.get(COL_KCAL))
-                if kcal is None:
-                    skipped += 1
-                    continue
+            kcal = _safe_float(row.get(COL_KCAL))
+            if kcal is None:
+                skipped += 1
+                continue
 
-                protein = _safe_float(row.get(COL_PROTEIN)) or 0.0
-                fat = _safe_float(row.get(COL_FAT)) or 0.0
-                carbs = _safe_float(row.get(COL_CARBS)) or 0.0
-                brands = (row.get(COL_BRANDS) or "").strip() or None
-                countries = (row.get(COL_COUNTRIES) or "").strip() or None
+            protein = _safe_float(row.get(COL_PROTEIN)) or 0.0
+            fat = _safe_float(row.get(COL_FAT)) or 0.0
+            carbs = _safe_float(row.get(COL_CARBS)) or 0.0
+            brands = (row.get(COL_BRANDS) or "").strip() or None
+            countries = (row.get(COL_COUNTRIES) or "").strip() or None
 
-                batch.append((code, name, brands, kcal, protein, fat, carbs, countries))
-
-                if len(batch) >= BATCH_SIZE:
-                    conn.executemany(
-                        "INSERT OR IGNORE INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        batch,
-                    )
-                    conn.commit()
-                    inserted += len(batch)
-                    batch.clear()
-
-                    if inserted % PROGRESS_EVERY == 0:
-                        elapsed = time.monotonic() - start_time
-                        rate = inserted / elapsed if elapsed > 0 else 0
-                        print(
-                            f"  {inserted:,} rows inserted, "
-                            f"{skipped:,} skipped, "
-                            f"{rate:,.0f} rows/sec"
-                        )
-
-            # Final batch
-            if batch:
-                conn.executemany(
-                    "INSERT OR IGNORE INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    batch,
+            batch.append(
+                (
+                    name,
+                    name.lower(),
+                    brands,
+                    kcal,
+                    protein,
+                    fat,
+                    carbs,
+                    code,
+                    countries,
                 )
+            )
+
+            if len(batch) >= BATCH_SIZE:
+                conn.executemany(UPSERT_SQL, batch)
                 conn.commit()
                 inserted += len(batch)
+                batch.clear()
 
-        print("Building FTS5 index...")
+                if inserted % PROGRESS_EVERY == 0:
+                    elapsed = time.monotonic() - start_time
+                    rate = inserted / elapsed if elapsed > 0 else 0
+                    print(
+                        f"  {inserted:,} rows inserted, "
+                        f"{skipped:,} skipped, "
+                        f"{rate:,.0f} rows/sec"
+                    )
+
+        # Final batch
+        if batch:
+            conn.executemany(UPSERT_SQL, batch)
+            conn.commit()
+            inserted += len(batch)
+
+    # Rebuild FTS index
+    print("Rebuilding FTS5 index...")
+    try:
         conn.execute("INSERT INTO products_fts(products_fts) VALUES('rebuild')")
         conn.commit()
+    except sqlite3.OperationalError as e:
+        print(f"  FTS rebuild warning: {e}")
 
-        print("Running VACUUM...")
-        conn.execute("VACUUM")
-        conn.close()
+    # Restore FTS triggers
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS products_fts_insert
+        AFTER INSERT ON products BEGIN
+            INSERT INTO products_fts(rowid, name, brand)
+            VALUES (new.rowid, new.name, new.brand);
+        END;
 
-        # Atomic rename
-        os.replace(tmp_path, output_path)
+        CREATE TRIGGER IF NOT EXISTS products_fts_delete
+        AFTER DELETE ON products BEGIN
+            INSERT INTO products_fts(products_fts, rowid, name, brand)
+            VALUES ('delete', old.rowid, old.name, old.brand);
+        END;
 
-        elapsed = time.monotonic() - start_time
-        size_mb = os.path.getsize(output_path) / (1024 * 1024)
-        print(
-            f"Done: {inserted:,} products imported, "
-            f"{skipped:,} skipped, "
-            f"{size_mb:.0f} MB, "
-            f"{elapsed:.0f}s"
-        )
+        CREATE TRIGGER IF NOT EXISTS products_fts_update
+        AFTER UPDATE OF name, brand ON products BEGIN
+            INSERT INTO products_fts(products_fts, rowid, name, brand)
+            VALUES ('delete', old.rowid, old.name, old.brand);
+            INSERT INTO products_fts(rowid, name, brand)
+            VALUES (new.rowid, new.name, new.brand);
+        END;
+    """)
 
-    except BaseException:
-        # Clean up temp file on any failure
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
+    conn.close()
+
+    elapsed = time.monotonic() - start_time
+    print(f"Done: {inserted:,} products imported, {skipped:,} skipped, {elapsed:.0f}s")
 
 
-def delta_update(output_path: str):
+def delta_update(db_path: str):
     """Apply incremental delta updates from OpenFoodFacts."""
-    if not os.path.exists(output_path):
-        print(f"Database not found at {output_path}, run full import first.")
+    if not os.path.exists(db_path):
+        print(f"Database not found at {db_path}, run full import first.")
         sys.exit(1)
 
-    cursor_path = os.path.join(os.path.dirname(output_path), ".off_delta_cursor")
+    cursor_path = os.path.join(os.path.dirname(db_path), ".off_delta_cursor")
 
     # Read last processed delta file
     last_cursor = ""
@@ -219,7 +263,6 @@ def delta_update(output_path: str):
         start_idx = delta_files.index(last_cursor) + 1
         new_deltas = delta_files[start_idx:]
     else:
-        # No cursor or cursor not found — process all available deltas
         new_deltas = delta_files
 
     if not new_deltas:
@@ -228,8 +271,9 @@ def delta_update(output_path: str):
 
     print(f"Processing {len(new_deltas)} delta file(s)...")
 
-    conn = sqlite3.connect(output_path)
+    conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
+    _ensure_schema(conn)
 
     total_upserted = 0
 
@@ -279,15 +323,29 @@ def delta_update(output_path: str):
                     countries = ",".join(countries)
                 countries = countries.strip() or None
 
-                batch.append((code, name, brands, kcal, protein, fat, carbs, countries))
+                batch.append(
+                    (
+                        name,
+                        name.lower(),
+                        brands,
+                        kcal,
+                        protein,
+                        fat,
+                        carbs,
+                        code,
+                        countries,
+                    )
+                )
 
                 if len(batch) >= BATCH_SIZE:
-                    _upsert_batch(conn, batch)
+                    conn.executemany(UPSERT_SQL, batch)
+                    conn.commit()
                     upserted += len(batch)
                     batch.clear()
 
         if batch:
-            _upsert_batch(conn, batch)
+            conn.executemany(UPSERT_SQL, batch)
+            conn.commit()
             upserted += len(batch)
 
         total_upserted += upserted
@@ -300,33 +358,24 @@ def delta_update(output_path: str):
     # Rebuild FTS after all deltas
     if total_upserted > 0:
         print("Rebuilding FTS5 index...")
-        conn.execute("INSERT INTO products_fts(products_fts) VALUES('rebuild')")
-        conn.commit()
+        try:
+            conn.execute("INSERT INTO products_fts(products_fts) VALUES('rebuild')")
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            print(f"  FTS rebuild warning: {e}")
 
     conn.close()
     print(f"Done: {total_upserted:,} products upserted from {len(new_deltas)} delta(s)")
 
 
-def _upsert_batch(conn: sqlite3.Connection, batch: list[tuple]):
-    conn.executemany(
-        "INSERT OR REPLACE INTO products "
-        "(code, product_name, brands, kcal_per_100, protein_per_100, fat_per_100, carbs_per_100, countries_tags) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        batch,
-    )
-    conn.commit()
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Import OpenFoodFacts data into SQLite"
+        description="Import OpenFoodFacts data into unified products table"
     )
     parser.add_argument(
-        "--output",
-        default=os.path.join(
-            os.path.dirname(__file__), "..", "data", "off_products.db"
-        ),
-        help="Output database path (default: data/off_products.db)",
+        "--db",
+        default=os.path.join(os.path.dirname(__file__), "..", "data", "fitness.db"),
+        help="Path to fitness database (default: data/fitness.db)",
     )
     parser.add_argument(
         "--csv-path",
@@ -340,12 +389,12 @@ def main():
     )
     args = parser.parse_args()
 
-    output = os.path.abspath(args.output)
+    db_path = os.path.abspath(args.db)
 
     if args.delta:
-        delta_update(output)
+        delta_update(db_path)
     else:
-        full_import(output, csv_path=args.csv_path)
+        full_import(db_path, csv_path=args.csv_path)
 
 
 if __name__ == "__main__":

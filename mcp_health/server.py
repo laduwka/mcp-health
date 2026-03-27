@@ -14,13 +14,16 @@ from prometheus_client import make_asgi_app
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from . import calc, config, db, openfoodfacts
+from . import calc, config, db
 from .log import get_logger
 from .metrics import (
     ACTIVITIES_LOGGED,
     CYCLE_EVENTS_LOGGED,
     HEALTH_IMPORT_LATENCY,
     HEALTH_IMPORTS,
+    LOG_MEAL_ITEMS,
+    LOG_MEAL_PHASE,
+    LOG_MEAL_RESOLUTION,
     MEALS_LOGGED,
     PRODUCTS_CREATED,
     WEIGHT_ENTRIES,
@@ -89,6 +92,18 @@ def _utc_to_local_date(utc_str: str) -> str:
 # --- Tool 1: add_product ---
 
 
+def _nutrition_differs(
+    provided: dict, reference: dict, threshold: float = 0.15
+) -> bool:
+    """Check if nutrition values differ by more than threshold (relative)."""
+    for key in ("kcal_per_100", "protein_per_100", "fat_per_100", "carbs_per_100"):
+        ref = reference[key]
+        val = provided[key]
+        if ref > 0 and abs(val - ref) / ref > threshold:
+            return True
+    return False
+
+
 @mcp.tool()
 @instrument_tool
 def add_product(
@@ -101,8 +116,12 @@ def add_product(
     per_unit: str = "g",
     barcode: str | None = None,
     notes: str | None = None,
+    force: bool = False,
 ) -> dict:
-    """Add a food product to the database with nutritional info per specified amount."""
+    """Add a custom food product. Checks local DB for duplicates and
+    OpenFoodFacts for similar products before creating. If matches found
+    with different nutrition, returns them instead of creating.
+    Use force=True for homemade/custom products not in any database."""
     normalized = calc.normalize_per_100(kcal, protein, fat, carbs, per_amount)
     warnings = calc.validate_nutrition(
         normalized["kcal_per_100"],
@@ -111,6 +130,44 @@ def add_product(
         normalized["carbs_per_100"],
     )
     conn = _get_conn()
+
+    if not force:
+        # Check local duplicates (exact name match)
+        existing = db.search_products(conn, name, limit=3)
+        exact = [p for p in existing if p["name"].lower() == name.lower()]
+        if exact:
+            return {
+                "status": "already_exists",
+                "product": exact[0],
+                "message": f"Product '{name}' already exists. Use its product_id directly.",
+            }
+
+        # Check OFF products via FTS
+        off_matches = db.search_products_fts(conn, name, limit=3)
+        off_matches = [p for p in off_matches if p.get("source") == "off"]
+        differing = [p for p in off_matches if _nutrition_differs(normalized, p)]
+        if differing:
+            return {
+                "status": "off_matches_found",
+                "off_products": [
+                    {
+                        "product_id": p["id"],
+                        "name": p["name"],
+                        "brand": p.get("brand"),
+                        "kcal_per_100": p["kcal_per_100"],
+                        "protein_per_100": p["protein_per_100"],
+                        "fat_per_100": p["fat_per_100"],
+                        "carbs_per_100": p["carbs_per_100"],
+                    }
+                    for p in differing
+                ],
+                "message": (
+                    "Similar products found in database with different nutrition. "
+                    "Use their product_id in log_meal, or call add_product with "
+                    "force=True to create a custom product."
+                ),
+            }
+
     product_id = db.insert_product(
         conn,
         name=name,
@@ -121,6 +178,7 @@ def add_product(
         label_per_unit=per_unit,
         barcode=barcode,
         notes=notes,
+        source="local",
     )
     PRODUCTS_CREATED.inc()
     return {
@@ -136,62 +194,13 @@ def add_product(
 
 @mcp.tool()
 @instrument_tool
-def search_product(query: str, limit: int = 5, include_off: bool = True) -> list[dict]:
-    """Search for products by name in local DB and optionally OpenFoodFacts (filtered by user's country). Returns matches sorted by usage frequency, with default_serving_grams when available. For known products (usage_count > 0), use product_id and default_serving directly — no need to ask clarifying questions. Set include_off=False for products the user logs regularly. PREFER get_recent_meals or get_top_products when logging routine meals."""
+def search_product(query: str, limit: int = 5) -> list[dict]:
+    """Search for products by name in the unified database (local + OpenFoodFacts).
+    Returns matches sorted by usage frequency, with default_serving_grams when available.
+    For known products (usage_count > 0), use product_id and default_serving directly.
+    PREFER get_recent_meals or get_top_products when logging routine meals."""
     conn = _get_conn()
-    local = db.search_products(conn, query, limit)
-    results = [{"source": "local", **p} for p in local]
-
-    # Smart OFF skip: if all local results are known products and we have enough, skip OFF
-    all_known = all(r.get("usage_count", 0) > 0 for r in results)
-    remaining = limit - len(results)
-    if include_off and remaining > 0 and (not all_known or len(results) < limit):
-        off_results = openfoodfacts.search(
-            query, limit=remaining, country=config.OFF_COUNTRY or None
-        )
-        local_barcodes = {r.get("barcode") for r in results if r.get("barcode")}
-        for p in off_results:
-            if p.get("barcode") and p["barcode"] in local_barcodes:
-                continue
-            results.append({"source": "openfoodfacts", **p})
-            if len(results) >= limit:
-                break
-
-    return results
-
-
-# --- Tool: lookup_product ---
-
-
-@mcp.tool()
-@instrument_tool
-def lookup_product(barcode: str, save: bool = True) -> dict:
-    """Look up a product by barcode. Checks local DB first, then OpenFoodFacts.
-    If save=True, caches the OFF result locally for future lookups."""
-    conn = _get_conn()
-
-    local = db.get_product_by_barcode(conn, barcode)
-    if local:
-        return {"source": "local", "product": dict(local)}
-
-    off = openfoodfacts.lookup_barcode(barcode)
-    if off is None:
-        return {"source": None, "product": None, "message": "Product not found"}
-
-    if save:
-        product_id = db.insert_product(
-            conn,
-            name=off["name"],
-            kcal_per_100=off["kcal_per_100"],
-            protein_per_100=off["protein_per_100"],
-            fat_per_100=off["fat_per_100"],
-            carbs_per_100=off["carbs_per_100"],
-            barcode=barcode,
-            notes=f"OpenFoodFacts: {off.get('brands') or ''}".strip(),
-        )
-        off["id"] = product_id
-
-    return {"source": "openfoodfacts", "product": off}
+    return db.search_products_fts(conn, query, limit)
 
 
 # --- Tool 3: log_meal ---
@@ -205,118 +214,181 @@ def log_meal(
     notes: str | None = None,
     timestamp: str | None = None,
 ) -> dict:
-    """Log a meal. Each item needs product_id + weight_grams.
-    WORKFLOW: (1) If "same as yesterday" → call get_recent_meals, reuse items directly. (2) For routine products → call search_product(include_off=False), use product_id + default_serving_grams. (3) Only ask clarifying questions for products never logged before (usage_count=0, no default_serving_grams). Ad-hoc nutrition only when product not found in any search."""
+    """Log a meal. Each item accepts EITHER product_id + weight_grams OR query + weight_grams.
+    When query is provided, the server resolves it to a product automatically — no need to call
+    search_product first. If a query is ambiguous (multiple candidates), those items are returned
+    as ambiguous_items with candidates for you to pick from; re-call with product_id.
+    NEVER provide nutrition values directly — always use product_id or query."""
     conn = _get_conn()
     calculated_items = []
+    ambiguous_items = []
+    not_found_items = []
     all_warnings = []
 
+    LOG_MEAL_ITEMS.observe(len(items))
+
+    # Phase 1: Resolve queries to product_ids
+    phase_start = time.monotonic()
+    resolved_items = []  # (original_item, product_id)
+    query_items = []  # items that need resolution
+
     for item in items:
+        if "product_id" in item:
+            resolved_items.append((item, item["product_id"]))
+        elif "query" in item:
+            query_items.append(item)
+        else:
+            raise ValueError(
+                "Each item must have either 'product_id' or 'query'. "
+                "Never provide nutrition values directly."
+            )
+
+    # Resolve query items via FTS
+    for item in query_items:
+        candidates = db.resolve_product(conn, item["query"], limit=5)
+        if not candidates:
+            not_found_items.append({"query": item["query"]})
+            LOG_MEAL_RESOLUTION.labels(outcome="not_found").inc()
+            continue
+
+        # Auto-resolve: top candidate with usage_count > 0
+        top = candidates[0]
+        if top.get("usage_count", 0) > 0:
+            resolved_items.append((item, top["id"]))
+            LOG_MEAL_RESOLUTION.labels(outcome="resolved").inc()
+        elif len(candidates) == 1:
+            # Only one candidate — use it
+            resolved_items.append((item, top["id"]))
+            LOG_MEAL_RESOLUTION.labels(outcome="resolved").inc()
+        else:
+            ambiguous_items.append(
+                {
+                    "query": item["query"],
+                    "weight_grams": item["weight_grams"],
+                    "candidates": [
+                        {
+                            "product_id": c["id"],
+                            "name": c["name"],
+                            "brand": c.get("brand"),
+                            "source": c.get("source", "local"),
+                            "kcal_per_100": c["kcal_per_100"],
+                            "protein_per_100": c["protein_per_100"],
+                            "fat_per_100": c["fat_per_100"],
+                            "carbs_per_100": c["carbs_per_100"],
+                        }
+                        for c in candidates[:5]
+                    ],
+                }
+            )
+            LOG_MEAL_RESOLUTION.labels(outcome="ambiguous").inc()
+
+    LOG_MEAL_PHASE.labels(phase="resolve").observe(time.monotonic() - phase_start)
+
+    # Phase 2: Batch fetch products
+    phase_start = time.monotonic()
+    product_ids = [pid for _, pid in resolved_items]
+    products = db.get_products_batch(conn, product_ids) if product_ids else {}
+
+    # Validate all products exist
+    for item, pid in resolved_items:
+        if pid not in products:
+            raise ValueError(f"Product {pid} not found")
+
+    LOG_MEAL_PHASE.labels(phase="fetch").observe(time.monotonic() - phase_start)
+
+    # Phase 3: Calculate portions
+    phase_start = time.monotonic()
+    for item, pid in resolved_items:
+        product = products[pid]
         weight = item["weight_grams"]
         portion_warnings = calc.validate_portion_weight(weight)
         all_warnings.extend(portion_warnings)
 
-        if "product_id" in item:
-            product = db.get_product(conn, item["product_id"])
-            if not product:
-                raise ValueError(f"Product {item['product_id']} not found")
-            portion = calc.calculate_portion(
-                weight,
-                product["kcal_per_100"],
-                product["protein_per_100"],
-                product["fat_per_100"],
-                product["carbs_per_100"],
-            )
-            calculated_items.append(
-                {
-                    "product_id": item["product_id"],
-                    "name": product["name"],
-                    "weight_grams": weight,
-                    **portion,
-                }
-            )
-            db.increment_product_usage(conn, item["product_id"])
-            # Auto-learn serving size
-            if not product.get("default_serving_grams") and product["usage_count"] >= 2:
-                # usage_count was just incremented, so >= 2 means this is the 3rd+ use
-                common = db.get_most_common_serving(conn, item["product_id"])
-                if common and common["ratio"] >= 0.6:
-                    db.update_product_serving(
-                        conn, item["product_id"], common["weight_grams"]
-                    )
-        else:
-            per_amount = item.get("per_amount", 100.0)
-            normalized = calc.normalize_per_100(
-                item["kcal"], item["protein"], item["fat"], item["carbs"], per_amount
-            )
-            n_warnings = calc.validate_nutrition(
-                normalized["kcal_per_100"],
-                normalized["protein_per_100"],
-                normalized["fat_per_100"],
-                normalized["carbs_per_100"],
-            )
-            all_warnings.extend(n_warnings)
-            portion = calc.calculate_portion(
-                weight,
-                normalized["kcal_per_100"],
-                normalized["protein_per_100"],
-                normalized["fat_per_100"],
-                normalized["carbs_per_100"],
-            )
-            calc_item = {
-                "name": item["name"],
+        portion = calc.calculate_portion(
+            weight,
+            product["kcal_per_100"],
+            product["protein_per_100"],
+            product["fat_per_100"],
+            product["carbs_per_100"],
+        )
+        calculated_items.append(
+            {
+                "product_id": pid,
+                "name": product["name"],
                 "weight_grams": weight,
                 **portion,
             }
-            calculated_items.append(calc_item)
+        )
 
-            if item.get("save_product"):
-                pid = db.insert_product(
-                    conn,
-                    name=item["name"],
-                    kcal_per_100=normalized["kcal_per_100"],
-                    protein_per_100=normalized["protein_per_100"],
-                    fat_per_100=normalized["fat_per_100"],
-                    carbs_per_100=normalized["carbs_per_100"],
-                )
-                calc_item["product_id"] = pid
-                db.increment_product_usage(conn, pid)
+    LOG_MEAL_PHASE.labels(phase="calculate").observe(time.monotonic() - phase_start)
 
-    logged_ts = timestamp or _now_utc()
-    meal_id = db.insert_meal(conn, meal_type, notes, logged_ts, calculated_items)
-    MEALS_LOGGED.inc()
+    # Phase 4: Insert meal + batch updates (only if we have resolved items)
+    result = {}
+    if calculated_items:
+        phase_start = time.monotonic()
+        logged_ts = timestamp or _now_utc()
+        meal_id = db.insert_meal(conn, meal_type, notes, logged_ts, calculated_items)
+        MEALS_LOGGED.inc()
 
-    meal_total = {
-        "kcal": round(sum(i["kcal"] for i in calculated_items), 1),
-        "protein": round(sum(i["protein"] for i in calculated_items), 1),
-        "fat": round(sum(i["fat"] for i in calculated_items), 1),
-        "carbs": round(sum(i["carbs"] for i in calculated_items), 1),
-    }
-    logged_date = _utc_to_local_date(logged_ts)
-    daily_totals = db.get_daily_totals(conn, logged_date)
-    goals = db.get_current_goals(conn)
+        # Batch increment usage
+        db.increment_usage_batch(conn, product_ids)
 
-    result = {
-        "meal_id": meal_id,
-        "items_calculated": calculated_items,
-        "meal_total": meal_total,
-        "daily_totals": daily_totals,
-        "warnings": all_warnings,
-    }
+        # Batch auto-learn serving sizes
+        learnable = [
+            pid
+            for pid in product_ids
+            if not products[pid].get("default_serving_grams")
+            and products[pid].get("usage_count", 0) >= 2
+        ]
+        if learnable:
+            servings = db.get_common_servings_batch(conn, learnable)
+            for pid, info in servings.items():
+                if info["ratio"] >= 0.6:
+                    db.update_product_serving(conn, pid, info["weight_grams"])
 
-    if goals:
-        targets = {
-            "kcal": goals.get("daily_kcal"),
-            "protein": goals.get("protein_g"),
-            "fat": goals.get("fat_g"),
-            "carbs": goals.get("carbs_g"),
+        LOG_MEAL_PHASE.labels(phase="insert").observe(time.monotonic() - phase_start)
+
+        phase_start = time.monotonic()
+        meal_total = {
+            "kcal": round(sum(i["kcal"] for i in calculated_items), 1),
+            "protein": round(sum(i["protein"] for i in calculated_items), 1),
+            "fat": round(sum(i["fat"] for i in calculated_items), 1),
+            "carbs": round(sum(i["carbs"] for i in calculated_items), 1),
         }
-        remaining = {}
-        for k in ["kcal", "protein", "fat", "carbs"]:
-            if targets[k] is not None:
-                remaining[k] = round(targets[k] - daily_totals[k], 1)
-        result["daily_target"] = targets
-        result["remaining"] = remaining
+        logged_date = _utc_to_local_date(logged_ts)
+        daily_totals = db.get_daily_totals(conn, logged_date)
+        goals = db.get_current_goals(conn)
+        LOG_MEAL_PHASE.labels(phase="aggregate").observe(time.monotonic() - phase_start)
+
+        result = {
+            "meal_id": meal_id,
+            "resolved_items": calculated_items,
+            "meal_total": meal_total,
+            "daily_totals": daily_totals,
+            "warnings": all_warnings,
+        }
+
+        if goals:
+            targets = {
+                "kcal": goals.get("daily_kcal"),
+                "protein": goals.get("protein_g"),
+                "fat": goals.get("fat_g"),
+                "carbs": goals.get("carbs_g"),
+            }
+            remaining = {}
+            for k in ["kcal", "protein", "fat", "carbs"]:
+                if targets[k] is not None:
+                    remaining[k] = round(targets[k] - daily_totals[k], 1)
+            result["daily_target"] = targets
+            result["remaining"] = remaining
+
+    if ambiguous_items:
+        result["ambiguous_items"] = ambiguous_items
+    if not_found_items:
+        result["not_found_items"] = not_found_items
+
+    if not calculated_items and not ambiguous_items and not not_found_items:
+        raise ValueError("No items provided")
 
     return result
 

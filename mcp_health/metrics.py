@@ -16,19 +16,6 @@ TOOL_LATENCY = Histogram(
     ["tool"],
 )
 
-# --- OpenFoodFacts ---
-
-OFF_DB_QUERIES = Counter(
-    "off_db_queries_total",
-    "OpenFoodFacts local DB queries",
-    ["method"],
-)
-OFF_DB_LATENCY = Histogram(
-    "off_db_latency_seconds",
-    "OpenFoodFacts local DB query duration",
-    ["method"],
-)
-
 # --- Database ---
 
 DB_OPS = Counter(
@@ -57,6 +44,24 @@ HEALTH_IMPORTS = Counter(
 HEALTH_IMPORT_LATENCY = Histogram(
     "health_import_latency_seconds",
     "Health data import duration",
+)
+
+# --- log_meal pipeline ---
+
+LOG_MEAL_PHASE = Histogram(
+    "log_meal_phase_seconds",
+    "Time spent in each phase of log_meal",
+    ["phase"],
+)
+LOG_MEAL_ITEMS = Histogram(
+    "log_meal_items_count",
+    "Number of items per log_meal call",
+    buckets=[1, 2, 3, 5, 8, 13],
+)
+LOG_MEAL_RESOLUTION = Counter(
+    "log_meal_resolution_total",
+    "Product resolution outcomes in log_meal",
+    ["outcome"],
 )
 
 # --- App info ---
