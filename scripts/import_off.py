@@ -93,9 +93,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     for sql in migrations:
         conn.execute(sql)
 
+    conn.execute("DROP INDEX IF EXISTS idx_products_off_code")
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_off_code "
-        "ON products(off_code) WHERE off_code IS NOT NULL"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_off_code ON products(off_code)"
     )
     conn.commit()
 

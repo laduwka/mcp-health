@@ -182,10 +182,11 @@ def init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # column already exists
 
-    # Unique index on off_code for OFF products
+    # Unique index on off_code for UPSERT support (non-partial required by ON CONFLICT)
+    # Drop partial index if it exists from a previous migration
+    conn.execute("DROP INDEX IF EXISTS idx_products_off_code")
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_off_code "
-        "ON products(off_code) WHERE off_code IS NOT NULL"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_off_code ON products(off_code)"
     )
 
     # FTS5 virtual table for unified product search
