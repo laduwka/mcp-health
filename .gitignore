@@ -11,3 +11,4 @@ ansible/group_vars/all/vars.yml
 ansible/inventory/hosts.yml
 CLAUDE.md
 .claude/*
+.agent/

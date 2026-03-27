@@ -6,10 +6,10 @@ MCP server for nutrition and weight tracking. Works as an HTTP endpoint with OAu
 
 ## Features
 
-- **Products** — product database with calories/protein/fat/carbs per 100g, name search, barcodes, default serving sizes
-- **OpenFoodFacts** — local database of ~2M products (SQLite + FTS5), instant search and barcode lookup without external APIs, country filtering
-- **Meals** — logging with portion calculation, ad-hoc products with auto-save
-- **Quick logging** — repeat meals without clarification questions: meal history, auto-learned serving sizes
+- **Unified product database** — local products + ~700K OpenFoodFacts products in a single table with FTS5 search
+- **Server-side resolution** — `log_meal` accepts product names (`query`), the server resolves them automatically. The LLM never provides nutrition values — hallucinations are structurally impossible
+- **Quick logging** — single `log_meal` call instead of search → lookup → log chain. Repeat meals without clarification questions: meal history, auto-learned serving sizes
+- **Duplicate protection** — `add_product` checks local DB and OpenFoodFacts before creating, compares nutrition values
 - **Weight** — tracking with trends (week/month)
 - **Goals** — daily calorie/macro targets, remaining intake
 - **Reports** — daily summary, weekly report with adherence, trends over any period
@@ -21,25 +21,42 @@ MCP server for nutrition and weight tracking. Works as an HTTP endpoint with OAu
 
 | Tool | Description |
 |------|-------------|
-| `add_product` | Add a product to the database (calories, macros, barcode, notes) |
-| `search_product` | Search by name (local + country-filtered OpenFoodFacts), sorted by usage, with serving sizes |
-| `lookup_product` | Look up product by barcode (local DB → OpenFoodFacts → cache) |
-| `log_meal` | Log a meal (by product_id or ad-hoc), auto-learns serving sizes |
+| `add_product` | Add a product. Checks for duplicates and OFF before creating. Use `force=True` for custom products |
+| `search_product` | Search by name in the unified database (local + OFF), sorted by usage frequency |
+| `log_meal` | Log a meal. Accepts `product_id` or `query` (product name) — server resolves automatically |
 | `get_recent_meals` | Recent meals with full item data — for re-logging without search |
 | `set_product_serving` | Set default serving size (e.g. 39g = 1 protein scoop) |
+| `get_top_products` | Top products by frequency — call before search for routine meals |
 | `log_weight` | Log weight, get trend |
 | `get_daily_summary` | Daily summary: meals, totals, remaining vs goals |
 | `get_weekly_report` | Weekly report: averages, adherence, top products |
 | `get_trends` | Nutrition and weight trends over N days |
-| `get_top_products` | Top products with product_id, macros, and serving sizes — call before search for routine meals |
 | `update_goals` | Set/update daily calorie and macro goals |
 | `delete_meal` | Delete a logged meal |
 | `delete_meal_item` | Delete a single item from a meal (deletes meal if last item) |
 | `update_meal_item` | Update item weight with automatic macro recalculation |
 | `log_activity` | Log a workout (type, duration, calories, distance, heart rate) |
-| `get_activity_summary` | Activity summary for a day: total duration, calories, distance |
+| `get_activity_summary` | Activity summary for a day |
 | `log_cycle_event` | Log a cycle event (flow, cervical_mucus, ovulation_test, basal_temp) |
 | `get_cycle_summary` | Cycle analytics: average length, next period prediction |
+
+### Meal logging workflow
+
+```
+# Typical lunch — single call:
+log_meal(items=[
+    {"query": "buckwheat boiled", "weight_grams": 150},
+    {"query": "chicken breast", "weight_grams": 107},
+    {"query": "feta", "weight_grams": 25},
+], meal_type="lunch")
+
+# If query is ambiguous (e.g. "milk" → 2%, 3.2%):
+# → server returns ambiguous_items with candidates
+# → re-call with product_id
+
+# By product_id (as before):
+log_meal(items=[{"product_id": 12, "weight_grams": 200}])
+```
 
 ## Quick Start
 
@@ -57,24 +74,24 @@ docker compose up -d
 
 ### OpenFoodFacts Database Import
 
-Product search and barcode lookup require importing the OFF database:
+OFF products are imported directly into the main `fitness.db` database:
 
 ```bash
-# Full import from CSV dump (~1.1 GB gz, ~2M products → ~400-500 MB on disk)
-python scripts/import_off.py
+# Full import from CSV dump (~1.1 GB gz, ~700K products)
+python scripts/import_off.py --db data/fitness.db
 
-# Or from a local file (if already downloaded)
-python scripts/import_off.py --csv-path /path/to/en.openfoodfacts.org.products.csv.gz
+# From a local file
+python scripts/import_off.py --db data/fitness.db --csv-path /path/to/en.openfoodfacts.org.products.csv.gz
 
 # Incremental delta update
-python scripts/import_off.py --delta
+python scripts/import_off.py --db data/fitness.db --delta
 ```
 
-The script creates `data/off_products.db` — a read-only SQLite with FTS5 index. The application works without this database (returns empty OFF results).
+OFF products are saved with `source='off'` and `off_code` (barcode). Local products (`source='local'`) always rank higher in search results via `usage_count`.
 
 **Updates** are configured via cron (Ansible):
-- **Full re-import** — Sunday 4:00 AM (atomic file replacement)
-- **Delta update** — Monday–Saturday 4:00 AM (incremental upsert)
+- **Full re-import** — Sunday 4:00 AM
+- **Delta update** — Monday–Saturday 4:00 AM
 
 ## Connecting
 
@@ -138,9 +155,7 @@ For each automation:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUTH_TOKEN` | `changeme` | Password for OAuth authorization (also used as Bearer token in legacy mode) |
-| `DB_PATH` | `data/fitness.db` | Path to user data SQLite database |
-| `OFF_DB_PATH` | `data/off_products.db` | Path to OpenFoodFacts SQLite database (read-only) |
-| `OFF_COUNTRY` | _(empty)_ | Country filter for OFF search (e.g. `en:canada`). If not set — no filtering |
+| `DB_PATH` | `data/fitness.db` | Path to SQLite database (products, meals, OFF — all in one DB) |
 | `TZ` | `America/Toronto` | Timezone |
 | `OAUTH_ISSUER` | _(empty)_ | OAuth server URL (e.g. `https://your-domain.com`). If not set — falls back to legacy Bearer auth |
 | `LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
@@ -152,7 +167,6 @@ For each automation:
 The application exports Prometheus metrics at `/metrics` (accessible only from localhost, nginx returns 403 externally):
 
 - **MCP Tools** — `mcp_tool_calls_total`, `mcp_tool_latency_seconds` (per tool)
-- **OpenFoodFacts** — `off_db_queries_total`, `off_db_latency_seconds` (per method: search/lookup)
 - **Database** — `db_operations_total`, `db_latency_seconds` (per operation)
 - **Business** — `meals_logged_total`, `products_created_total`, `weight_entries_total`, `activities_logged_total`, `cycle_events_logged_total`
 - **Health Import** — `health_import_total` (by data_type: weight/activity/cycle), `health_import_latency_seconds`
@@ -162,12 +176,12 @@ The application exports Prometheus metrics at `/metrics` (accessible only from l
 Structured JSON logs to stderr:
 
 ```json
-{"ts": "2026-03-24T12:00:00", "level": "WARNING", "logger": "mcp_health.off", "msg": "OFF database not found", "path": "data/off_products.db"}
+{"ts": "2026-03-24T12:00:00", "level": "INFO", "logger": "mcp_health.db", "msg": "Database connection opened"}
 ```
 
 ### Grafana
 
-Dashboard `grafana/mcp-health-dashboard.json` — auto-deployed to `/var/lib/grafana/dashboards/`. Panels: overview, MCP tools, OpenFoodFacts (DB queries/latency), business metrics, database.
+Dashboard `grafana/mcp-health-dashboard.json` — auto-deployed to `/var/lib/grafana/dashboards/`.
 
 VictoriaMetrics scrape job is added via the `monitoring` Ansible role.
 
@@ -200,13 +214,12 @@ ansible-playbook -i inventory/hosts.yml playbook.yml --tags monitoring  # monito
 mcp_health/            # Main application package
   server.py            # MCP server (FastMCP + Starlette + OAuth/Bearer auth)
   auth_provider.py     # OAuth provider (OAuthAuthorizationServerProvider + login flow)
-  db.py                # SQLite: products, meals, weight, goals, activity, cycle
+  db.py                # SQLite: products (local + OFF), meals, weight, goals, activity, cycle, FTS5
   calc.py              # Calorie/macro calculations, normalization, validation
   config.py            # Configuration from env vars
-  openfoodfacts.py     # Local OpenFoodFacts search (SQLite + FTS5)
   metrics.py           # Prometheus metrics and instrumentation decorators
   log.py               # Structured JSON logging
-scripts/import_off.py  # OFF database import (full CSV + delta updates)
+scripts/import_off.py  # OFF import into unified products table (full CSV + delta updates)
 grafana/               # Grafana dashboard
 ansible/               # Ansible roles for VPS deployment (app, nginx, monitoring, backup)
 .github/workflows/     # CI (ruff + pytest) and CD (GHCR + SSH deploy)
